@@ -1,5 +1,4 @@
 const EXTENSION_NAME = 'cardvault-sillytavern-extension';
-const EXTENSION_PATH = 'third-party/cardvault-sillytavern-extension';
 const LEGACY_GLOBAL_PERSISTENT_TOKEN_KEY = 'cardvault_persistent_token_v2';
 const LEGACY_SESSION_TOKEN_KEY = 'cardvault_session_token_v1';
 const CARDVAULT_ACCESS_POLICY = Object.freeze({
@@ -4441,12 +4440,10 @@ async function uploadLocalFiles(files) {
 }
 
 async function renderSettingsTemplate() {
-    const ctx = context();
-    if (typeof ctx.renderExtensionTemplateAsync === 'function') {
-        try { return await ctx.renderExtensionTemplateAsync(EXTENSION_PATH, 'settings'); } catch { /* repo folder may be renamed */ }
-    }
     const response = await fetch(new URL('./settings.html', import.meta.url), { cache: 'no-store' });
-    if (!response.ok) throw new Error('无法加载 CardVault 设置页面');
+    if (!response.ok) {
+        throw new Error(`无法加载 CardVault 设置页面：HTTP ${response.status}`);
+    }
     return response.text();
 }
 
