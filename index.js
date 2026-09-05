@@ -1882,11 +1882,27 @@ function classificationFingerprint(card) {
     return [card?.id, card?.currentVersion ?? card?.version ?? '', card?.size ?? '', card?.updatedAt ?? card?.updated_at ?? ''].join('|');
 }
 
+function normalizeAiClassificationTags(values) {
+    // AI 分类是封闭枚举：最终保存/显示/筛选的标签只能来自当前“选择标签”面板。
+    // 不接受模型自行创造的同义词、组合词、上位词，也不把角色卡原生 tags 当作 AI 分类标签。
+    const allowed = new Set(currentCategoryTags());
+    return [...new Set((Array.isArray(values) ? values : [])
+        .map(value => String(value ?? '').trim())
+        .filter(tag => allowed.has(tag)))].slice(0, 7);
+}
+
 function getCardClassification(card) {
     if (!card?.id) return null;
     const record = extensionSettings().aiClassifications[classificationStorageKey(card.id)];
     if (!record || !Array.isArray(record.tags)) return null;
     if (Number(record.taxonomyVersion || 0) !== currentClassificationTaxonomyVersion()) return null;
+    const tags = normalizeAiClassificationTags(record.tags);
+    if (!tags.length) return null;
+    // 即使本地残留过旧/异常标签，读取时也只暴露当前面板中存在的固定标签。
+    // 不在当前词库中的旧标签会被静默丢弃，避免继续出现在筛选或卡片角标里。
+    if (tags.length !== record.tags.length || tags.some((tag, index) => tag !== String(record.tags[index] ?? '').trim())) {
+        return { ...record, tags };
+    }
     // 0.4.7 增量分类策略：只要同一 CardVault 账号下这个 card.id 已按当前标签体系分类过，
     // 就一直视为“已分类”。导入新卡、刷新列表、版本号/大小/updatedAt 变化都不会让旧卡自动重跑 AI。
     // fingerprint 仍保留在记录里，仅作为审计信息；只有用户主动“重新分类全部”才覆盖旧结果。
@@ -1895,8 +1911,8 @@ function getCardClassification(card) {
 
 function saveCardClassification(card, result) {
     const cfg = extensionSettings();
-    const tags = [...new Set((Array.isArray(result?.tags) ? result.tags : []).map(value => String(value).trim()).filter(tag => currentCategoryTags().includes(tag)))].slice(0, 7);
-    if (!tags.length) throw new Error('AI 没有返回有效的类脑标签');
+    const tags = normalizeAiClassificationTags(result?.tags);
+    if (!tags.length) throw new Error('AI 没有返回当前标签面板中的有效标签');
     cfg.aiClassifications[classificationStorageKey(card.id)] = {
         tags,
         summary: String(result?.summary || '').trim().slice(0, 120),
@@ -2046,7 +2062,7 @@ function openAiFilterPicker(cards) {
           <div><b>选择标签</b><span id="cv_ai_pick_count">${selected.size}</span></div>
           <button class="menu_button cv-ai-picker-close" type="button" title="关闭"><i class="fa-solid fa-xmark"></i></button>
         </div>
-        <div class="cv-ai-picker-note">${escapeHtml(classificationTaxonomy().name)} · ${escapeHtml(aiGenerationModeLabel())} · ${classifiedCount}/${cards.length} 已分类 · 可多选</div>
+        <div class="cv-ai-picker-note">${escapeHtml(classificationTaxonomy().name)} · ${escapeHtml(aiGenerationModeLabel())} · ${classifiedCount}/${cards.length} 已分类 · 可多选 · AI 仅使用下列固定标签</div>
         <div class="cv-ai-picker-chips">
           ${[...currentCategoryTags(), '未分类'].map(tag => `<button class="menu_button ${selected.has(tag) ? 'active' : ''}" type="button" data-cv-ai-pick="${escapeHtml(tag)}">${escapeHtml(tag === '未分类' ? tag : aiTagLabel(tag))}</button>`).join('')}
         </div>
@@ -2351,11 +2367,16 @@ function parseAiClassificationResult(value) {
 
 function validateAiClassificationResult(result) {
     if (!result || typeof result !== 'object' || Array.isArray(result)) throw new Error('AI 分类结果不是 JSON 对象');
-    const tags = [...new Set((Array.isArray(result.tags) ? result.tags : []).map(value => String(value).trim()).filter(tag => currentCategoryTags().includes(tag)))];
-    if (tags.length < 1) throw new Error(`AI 返回的标签不在当前“${classificationTaxonomy().name}”词库中`);
+    const rawTags = Array.isArray(result.tags) ? result.tags.map(value => String(value ?? '').trim()).filter(Boolean) : [];
+    const tags = normalizeAiClassificationTags(rawTags);
+    const rejected = [...new Set(rawTags.filter(tag => !currentCategoryTags().includes(tag)))];
+    if (rejected.length) {
+        console.warn('[CardVault] AI 返回了词库外标签，已强制丢弃：', rejected);
+    }
+    if (tags.length < 1) throw new Error(`AI 返回的标签全部不在当前“${classificationTaxonomy().name}”固定选项中`);
     return {
         ...result,
-        tags: tags.slice(0, 7),
+        tags,
         summary: String(result.summary || '').trim().slice(0, 120),
         confidence: Number.isFinite(Number(result.confidence)) ? Math.max(0, Math.min(1, Number(result.confidence))) : 0.5,
     };
@@ -2464,7 +2485,7 @@ function localHeuristicClassification(card) {
     const regexCount = Array.isArray(card?.regex) ? card.regex.length : 0;
     const frontendSignals = (dataString.match(/<(?:div|style|script|button|details|summary|iframe|svg|canvas)\b|css|javascript|jquery|状态栏|前端|界面/gi) || []).length + regexCount;
 
-    if (taxonomy.name === 'x 分类') {
+    if (requiredCardVaultAccount() !== 'admin') {
         if (frontendSignals >= 10) add('重前端');
         else if (frontendSignals >= 2) add('轻前端');
         else add('纯文字');
@@ -2516,11 +2537,23 @@ async function callAiClassifier(card, { maxChars = 52000, useSchema = true, comp
     if (!model) throw new Error('尚未选择 CardVault 独立分类模型；请先点击“拉取模型”或手动填写模型名');
 
     const taxonomy = classificationTaxonomy();
-    const allowed = currentCategoryTags().join('、');
-    const systemPrompt = '你是 SillyTavern 角色卡资料分类器。本任务只做元数据/检索标签分类，不续写剧情，不复述露骨内容，不编造未出现的关系。即使资料包含成人、暴力、禁忌或其他敏感题材，也只需进行中性的标签判断并输出 JSON。';
+    const allowedTags = [...currentCategoryTags()];
+    const allowed = allowedTags.join('、');
+    const systemPrompt = `你是 SillyTavern 角色卡资料分类器。本任务只做元数据/检索标签分类，不续写剧情，不复述露骨内容，不编造未出现的关系。即使资料包含成人、暴力、禁忌或其他敏感题材，也只需进行中性的标签判断并输出 JSON。
+
+【最高优先级硬约束】tags 是封闭枚举。你只能逐字使用用户随后给出的“固定标签列表”中的字符串；严禁创造新标签、同义词、缩写、合并词、解释词、上位词或“其他/未知/未分类”等列表外标签。资料不匹配时宁可少选，也绝不能输出列表外标签。`;
     const prompt = `这是 CardVault 独立后台资料分类任务。你只能分析下面单独提供的待分类资料，不得参考 SillyTavern 当前聊天、当前聊天预设、当前角色或聊天历史。
 
 请按“${taxonomy.name}”体系，为下面这张 SillyTavern 角色卡做多标签分类。
+
+【固定标签列表（封闭集合）】
+${JSON.stringify(allowedTags)}
+
+【必须遵守】
+1. tags 数组里的每一项必须从上面的固定标签列表逐字复制，大小写和符号都必须一致。
+2. 不允许输出任何列表之外的标签；不允许自己发明新分类。
+3. 不允许把两个标签拼成一个新标签，也不允许输出近义词替代已有标签。
+4. 如果某个维度资料不足，就不要选那个标签；不得用“其他”“未知”“未分类”补位。
 
 可用标签只能来自：${allowed}
 
