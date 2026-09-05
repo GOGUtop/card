@@ -1,0 +1,14 @@
+{
+  "manifest_version": 1,
+  "id": "cardvault_sillytavern_extension",
+  "display_name": "CardVault · 云端卡库 · Standalone",
+  "version": "1.0.0",
+  "description": "从 VVV fixed133 独立提取的 CardVault 云端角色卡库。保留角色卡浏览/上传/备份、游玩备份、聊天与世界书归档恢复、AI 分类、批量管理；优先复用现有 VVV 同源代理，也可独立直连 CardVault API。",
+  "author": "小狗主理人 × vvv",
+  "loading_order": 25,
+  "requires": [],
+  "optional": [],
+  "js": "index.js",
+  "css": "style.css",
+  "auto_update": true
+}

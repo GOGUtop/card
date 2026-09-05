@@ -1,0 +1,156 @@
+<div id="cardvault_settings" class="cardvault-settings">
+  <div class="inline-drawer">
+    <div class="inline-drawer-toggle inline-drawer-header">
+      <b><i class="fa-solid fa-box-archive"></i> CardVault 云端卡库</b>
+      <div class="inline-drawer-icon fa-solid fa-circle-chevron-down down"></div>
+    </div>
+    <div class="inline-drawer-content">
+      <p id="cv_policy_help" class="cv-help">独立版 CardVault：可直接连接云端卡库；如当前 SillyTavern 已安装 VVV 同源代理，也可以优先复用代理。</p>
+
+      <section class="cv-auth-card" aria-label="CardVault 登录">
+        <div class="cv-auth-title">
+          <span class="cv-auth-mark"><i class="fa-solid fa-shield-halved"></i></span>
+          <div>
+            <b>CardVault 云端连接</b>
+            <small>服务器地址、云端账号与酒馆账号分离；密码只用于本次登录，不会写入扩展设置</small>
+          </div>
+        </div>
+
+        <label class="cv-auth-field" for="cv_api_url">
+          <span class="cv-auth-label"><i class="fa-solid fa-server"></i> CardVault 服务器</span>
+          <input id="cv_api_url" class="text_pole" type="url" autocomplete="off" autocapitalize="none" spellcheck="false" placeholder="例如：https://cards.example.com" />
+        </label>
+
+        <label class="cv-auth-field" for="cv_username">
+          <span class="cv-auth-label"><i class="fa-solid fa-user"></i> 云端账号</span>
+          <input id="cv_username" class="text_pole" type="text" list="cv_username_options" autocomplete="username" autocapitalize="none" spellcheck="false" placeholder="card2" />
+          <datalist id="cv_username_options">
+            <option value="card2"></option>
+            <option value="admin"></option>
+          </datalist>
+        </label>
+
+        <div class="cv-auth-field">
+          <span class="cv-auth-label"><i class="fa-solid fa-cloud"></i> 当前连接目标</span>
+          <div class="cv-account-picker" aria-label="当前 CardVault 云端账号">
+            <div id="cv_bound_account" class="cv-account-option is-active" data-account="">
+              <span class="cv-account-icon"><i class="fa-solid fa-cloud"></i></span>
+              <span class="cv-account-copy"><b>正在读取……</b><small>独立连接模式</small></span>
+              <span class="cv-account-check"><i class="fa-solid fa-cloud"></i></span>
+            </div>
+          </div>
+        </div>
+
+        <label class="cv-auth-field cv-proxy-option" for="cv_prefer_proxy">
+          <span>
+            <span class="cv-auth-label"><i class="fa-solid fa-shield-halved"></i> 优先同源代理</span>
+            <small class="cv-help">检测到现有 VVV CardVault 服务端代理时优先使用；没有代理会自动改为浏览器直连。</small>
+          </span>
+          <input id="cv_prefer_proxy" type="checkbox" checked />
+        </label>
+
+        <label class="cv-auth-field" for="cv_password">
+          <span class="cv-auth-label"><i class="fa-solid fa-key"></i> 密码</span>
+          <span class="cv-input-shell cv-password-shell">
+            <input id="cv_password" class="text_pole" type="password" autocomplete="current-password" autocapitalize="none" spellcheck="false" placeholder="输入云端卡库密码（不会保存）" />
+            <button id="cv_password_toggle" type="button" class="cv-password-toggle" aria-label="显示密码" title="显示密码">
+              <i class="fa-solid fa-eye"></i>
+            </button>
+          </span>
+        </label>
+
+        <button id="cv_reconnect" type="button" class="menu_button cv-login-button">
+          <i class="fa-solid fa-arrow-right-to-bracket"></i>
+          <span>登录 / 刷新连接</span>
+        </button>
+      </section>
+
+      <div id="cv_status" class="cv-status" data-state="idle">
+        <span class="cv-status-dot"></span>
+        <span class="cv-status-text">正在检查连接……</span>
+      </div>
+
+      <div class="cv-row cv-settings-actions">
+        <button id="cv_open" type="button" class="menu_button">
+          <i class="fa-solid fa-box-archive"></i> 打开云端卡库
+        </button>
+        <button id="cv_upload_local" type="button" class="menu_button">
+          <i class="fa-solid fa-cloud-arrow-up"></i> 上传本地角色卡
+        </button>
+      </div>
+      <input id="cv_upload_input" type="file" accept=".png,.json,application/json,image/png" multiple hidden />
+
+      <button id="cv_backup_current" type="button" class="menu_button cv-full-button">
+        <i class="fa-solid fa-cloud-arrow-up"></i> 把当前酒馆角色备份到云端
+      </button>
+
+      <button id="cv_backup_all" type="button" class="menu_button cv-full-button cv-backup-all-button">
+        <i class="fa-solid fa-boxes-stacked"></i> 备份酒馆全部角色卡到 CardVault
+      </button>
+      <p class="cv-help cv-backup-help">会读取当前酒馆账号中的全部角色卡，逐张导出为 PNG 并上传；重复卡片会自动跳过，失败的卡片不会中断其他卡片。</p>
+
+
+      <section class="cv-ai-settings" aria-label="AI 分类设置">
+        <div class="cv-play-archive-heading">
+          <span class="cv-auth-mark"><i class="fa-solid fa-wand-magic-sparkles"></i></span>
+          <div><b>AI 角色卡分类 · 独立 API</b><small>完全独立于酒馆聊天主 API，可单独拉取和选择模型</small></div>
+        </div>
+
+        <label class="cv-auth-field" for="cv_classifier_api_url">
+          <span class="cv-auth-label"><i class="fa-solid fa-link"></i> API 地址</span>
+          <input id="cv_classifier_api_url" class="text_pole" type="url" autocomplete="off" autocapitalize="none" spellcheck="false" placeholder="例如：https://api.example.com/v1" />
+        </label>
+
+        <label class="cv-auth-field" for="cv_classifier_api_key">
+          <span class="cv-auth-label"><i class="fa-solid fa-key"></i> API Key</span>
+          <span class="cv-input-shell cv-password-shell">
+            <input id="cv_classifier_api_key" class="text_pole" type="password" autocomplete="off" autocapitalize="none" spellcheck="false" placeholder="sk-...（无鉴权接口可留空）" />
+            <button id="cv_classifier_api_key_toggle" type="button" class="cv-password-toggle" aria-label="显示 API Key" title="显示 API Key"><i class="fa-solid fa-eye"></i></button>
+          </span>
+        </label>
+
+        <label class="cv-auth-field" for="cv_classifier_model">
+          <span class="cv-auth-label"><i class="fa-solid fa-microchip"></i> 分类模型</span>
+          <select id="cv_classifier_model" class="text_pole cv-ai-model-select">
+            <option value="">请先点击“拉取模型”</option>
+          </select>
+        </label>
+        <label class="cv-auth-field" for="cv_classifier_model_manual">
+          <span class="cv-auth-label"><i class="fa-solid fa-pen"></i> 手动模型 ID <small>（可选）</small></span>
+          <input id="cv_classifier_model_manual" class="text_pole" type="text" autocomplete="off" autocapitalize="none" spellcheck="false" placeholder="模型列表没有时再手动填写；留空则使用上面的选择" />
+        </label>
+
+        <div class="cv-row cv-ai-api-actions">
+          <button id="cv_classifier_fetch_models" type="button" class="menu_button"><i class="fa-solid fa-cloud-arrow-down"></i> 拉取模型</button>
+          <button id="cv_classifier_save" type="button" class="menu_button cv-primary"><i class="fa-solid fa-floppy-disk"></i> 保存配置</button>
+        </div>
+        <p id="cv_classifier_status" class="cv-help cv-ai-api-status" data-state="idle">尚未配置独立分类 API。</p>
+        <p class="cv-help"><b>不会占用聊天主 API：</b>AI 分类直接请求这里填写的 OpenAI 兼容接口 <code>/models</code> 与 <code>/chat/completions</code>，不会读取当前聊天 API、聊天模型、聊天预设或聊天记录。</p>
+        <p class="cv-help"><b>失败保护：</b>单张失败后会自动缩短资料再尝试 1 次；已成功分类的旧卡不会重跑。</p>
+      </section>
+
+      <section class="cv-play-archive-settings">
+        <div class="cv-play-archive-heading">
+          <span class="cv-auth-mark"><i class="fa-solid fa-gamepad"></i></span>
+          <div><b>游玩备份 / 冷库存档</b><small>可同时恢复任意数量角色 · 不设数量上限</small></div>
+        </div>
+        <button id="cv_archive_all_cleanup" type="button" class="menu_button cv-full-button cv-play-primary">
+          <i class="fa-solid fa-box-archive"></i> 归档角色、聊天与已绑定世界书并清理酒馆
+        </button>
+        <p class="cv-help">逐张备份原角色 PNG、完整角色 JSON、全部 JSONL 聊天、卡内世界书、Scoped Regex 和已绑定世界书。所有文件经 SHA256 校验后，会弹出 CardVault 页面内确认框；只有点击“确认清理本地”才会删除酒馆角色、聊天及已绑定世界书。</p>
+        <button id="cv_cleanup_archived_worldbooks" type="button" class="menu_button cv-full-button">
+          <i class="fa-solid fa-broom"></i> 清理已归档角色残留的世界书
+        </button>
+        <p class="cv-help">用于清理 0.4.0/0.4.1 已经归档但仍留在酒馆里的绑定世界书。会重新校验 CardVault 云端副本，并保留仍被本地角色使用的世界书。</p>
+        <button id="cv_sync_return_current" type="button" class="menu_button cv-full-button">
+          <i class="fa-solid fa-cloud-arrow-up"></i> 同步当前角色并归还 CardVault
+        </button>
+        <p class="cv-help">玩完当前角色后点击这里：只同步并归还当前这一张；其他已经恢复到酒馆的角色不会受影响。游玩备份列表支持“批量管理 → 批量恢复所选”，选择数量不设上限。</p>
+      </section>
+
+      <button id="cv_forget" type="button" class="menu_button cv-full-button cv-forget-button">
+        <i class="fa-solid fa-trash-can"></i> 清除本机登录状态
+      </button>
+    </div>
+  </div>
+</div>
