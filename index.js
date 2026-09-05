@@ -1,4 +1,9 @@
 const EXTENSION_NAME = 'cardvault-sillytavern-extension';
+// 本地专用免密构建：固定 CardVault 账号并在令牌失效时自动重新登录。
+// 注意：浏览器端扩展无法真正隐藏静态密码；不要把包含此密码的构建发布到公开仓库。
+const CARDVAULT_AUTO_LOGIN_USERNAME = 'card2';
+const CARDVAULT_AUTO_LOGIN_PASSWORD = '2';
+const CARDVAULT_FLOAT_POSITION_KEY = 'cardvault_floating_ball_position_v1';
 const LEGACY_GLOBAL_PERSISTENT_TOKEN_KEY = 'cardvault_persistent_token_v2';
 const LEGACY_SESSION_TOKEN_KEY = 'cardvault_session_token_v1';
 const CARDVAULT_ACCESS_POLICY = Object.freeze({
@@ -97,6 +102,8 @@ let allowedCardVaultUsername = '';
 let cardVaultAccessDisabled = false;
 let activeTokenStorageKey = '';
 let initialized = false;
+let floatingBallCleanup = null;
+let permanentLoginKeepAliveTimer = null;
 let importGuardianCleanups = [];
 let importGuardianRunning = false;
 let importGuardianModulePromise = null;
@@ -170,7 +177,7 @@ async function loadSillyTavernAccount() {
 
 function refreshAuthIdentity() {
     const cfg = extensionSettings();
-    const username = String(cfg.username || DEFAULT_SETTINGS.username || 'card2').trim() || 'card2';
+    const username = CARDVAULT_AUTO_LOGIN_USERNAME;
     cfg.username = username;
     allowedCardVaultUsername = username;
     cardVaultAccessDisabled = false;
@@ -194,6 +201,7 @@ function requiredCardVaultAccount() {
 
 function removeCardVaultUi() {
     closeOverlay();
+    removeFloatingBall();
     document.querySelectorAll('#cardvault_settings').forEach(node => node.remove());
 }
 
@@ -865,7 +873,7 @@ function installInteractiveCardFallbacks() {
     }
 
     globalThis.cardVaultSeikanFallback = {
-        version: '1.0.0-standalone',
+        version: '1.1.0-standalone',
         rescan: () => rescanSeikanInteractiveRoots(document, { deepShadowScan: true }),
         send: role => sendSeikanRoleChoice(role),
         testOwner: () => sendSeikanRoleChoice('owner'),
@@ -1034,7 +1042,7 @@ async function tryCardVaultServerProxy({ force = false } = {}) {
 }
 
 async function apiFetch(path, options = {}) {
-    const { raw = false, timeoutMs = 30000, skipAccountPolicyCheck = false, ...fetchOptions } = options;
+    const { raw = false, timeoutMs = 30000, skipAccountPolicyCheck = false, _autoLoginRetry = false, ...fetchOptions } = options;
     if (!skipAccountPolicyCheck && path !== '/api/me') await ensureAllowedToken();
 
     let response;
@@ -1054,7 +1062,15 @@ async function apiFetch(path, options = {}) {
         if (response.status === 401 && cardVaultTransportMode !== 'proxy') {
             setSessionToken('');
             verifiedTokenAccount = '';
-            setStatus('CardVault 登录已过期，请重新输入密码', 'error');
+            if (!_autoLoginRetry) {
+                setStatus('CardVault 登录已过期，正在自动重新登录……', 'working');
+                try {
+                    await login(CARDVAULT_AUTO_LOGIN_PASSWORD);
+                    return apiFetch(path, { ...options, _autoLoginRetry: true });
+                } catch (loginError) {
+                    setStatus(`自动重新登录失败：${loginError?.message || loginError}`, 'error');
+                }
+            }
         }
         const message = typeof body === 'object' ? (body?.message || body?.error) : body;
         throw new Error(message || `CardVault 请求失败（HTTP ${response.status}）`);
@@ -1068,7 +1084,10 @@ async function ensureAllowedToken() {
     const required = requiredCardVaultAccount();
     if (verifiedTokenAccount === required) return true;
     if (await tryCardVaultServerProxy()) return true;
-    if (!getSessionToken()) throw new Error('尚未登录 CardVault，请输入密码');
+    if (!getSessionToken()) {
+        await login(CARDVAULT_AUTO_LOGIN_PASSWORD);
+        return true;
+    }
     cardVaultTransportMode = 'direct';
     cardVaultProxyReady = false;
     const me = await apiFetch('/api/me', { timeoutMs: 16000, skipAccountPolicyCheck: true });
@@ -1094,8 +1113,8 @@ async function login(passwordOverride = '') {
         return true;
     }
 
-    const password = String(passwordOverride || document.querySelector('#cv_password')?.value || '');
-    if (!password) throw new Error('请输入 CardVault 密码');
+    const password = String(passwordOverride || CARDVAULT_AUTO_LOGIN_PASSWORD);
+    if (!password) throw new Error('CardVault 自动登录密码为空');
     setStatus(`正在登录 ${accountDisplayName(username)}……`, 'working');
     const response = await request(`${cfg.apiUrl}/api/login`, {
         method: 'POST',
@@ -1130,8 +1149,9 @@ async function verify({ quiet = false } = {}) {
         cardVaultTransportMode = 'direct';
         cardVaultProxyReady = false;
         if (!getSessionToken()) {
-            setStatus(`未登录 ${accountDisplayName(username)} · 输入密码后连接`, 'idle');
-            return false;
+            setStatus(`正在自动连接 ${accountDisplayName(username)}……`, 'working');
+            await login(CARDVAULT_AUTO_LOGIN_PASSWORD);
+            return true;
         }
         await ensureAllowedToken();
         setStatus(`已连接：${accountDisplayName(username)} · 独立直连`, 'ok');
@@ -1147,6 +1167,31 @@ async function verify({ quiet = false } = {}) {
         if (!quiet) notify('warning', `CardVault 连接失败：${friendly}`);
         return false;
     }
+}
+
+function stopPermanentLoginKeepAlive() {
+    if (permanentLoginKeepAliveTimer) clearInterval(permanentLoginKeepAliveTimer);
+    permanentLoginKeepAliveTimer = null;
+}
+
+function startPermanentLoginKeepAlive() {
+    stopPermanentLoginKeepAlive();
+    permanentLoginKeepAliveTimer = setInterval(() => {
+        if (!initialized) return;
+        void apiFetch('/api/me', { timeoutMs: 16000, skipAccountPolicyCheck: true })
+            .then(data => {
+                const actual = String(data?.username || '').trim();
+                if (actual === CARDVAULT_AUTO_LOGIN_USERNAME) {
+                    verifiedTokenAccount = actual;
+                    setStatus(`已连接：${accountDisplayName(actual)} · 永久在线`, 'ok');
+                }
+            })
+            .catch(async error => {
+                console.warn('[CardVault] 永久在线心跳失败，尝试自动重新登录', error);
+                try { await login(CARDVAULT_AUTO_LOGIN_PASSWORD); }
+                catch (loginError) { console.warn('[CardVault] 自动重新登录暂时失败，将在下次心跳/操作时重试', loginError); }
+            });
+    }, 5 * 60 * 1000);
 }
 
 function disconnect() {
@@ -4439,6 +4484,194 @@ async function uploadLocalFiles(files) {
     if (document.querySelector('.cv-overlay')) await loadCards(document.querySelector('#cv_library_search')?.value || '');
 }
 
+function removeFloatingBall() {
+    if (typeof floatingBallCleanup === 'function') {
+        try { floatingBallCleanup(); } catch (_) {}
+    }
+    floatingBallCleanup = null;
+    document.querySelector('#cv_floating_root')?.remove();
+}
+
+function installFloatingBall() {
+    removeFloatingBall();
+
+    const root = document.createElement('div');
+    root.id = 'cv_floating_root';
+    root.className = 'cv-floating-root';
+    root.innerHTML = `
+      <div class="cv-floating-menu" role="menu" aria-label="CardVault 快捷操作">
+        <button type="button" class="cv-floating-action" data-cv-float-action="open" role="menuitem">
+          <i class="fa-solid fa-box-archive"></i><span><b>打开云端卡库</b><small>浏览、恢复与管理云端角色卡</small></span>
+        </button>
+        <button type="button" class="cv-floating-action" data-cv-float-action="backup" role="menuitem">
+          <i class="fa-solid fa-cloud-arrow-up"></i><span><b>备份当前角色</b><small>把当前酒馆角色备份到云端</small></span>
+        </button>
+        <button type="button" class="cv-floating-action cv-floating-action-danger" data-cv-float-action="archive" role="menuitem">
+          <i class="fa-solid fa-boxes-packing"></i><span><b>完整归档并清理</b><small>归档角色、聊天、世界书后确认清理</small></span>
+        </button>
+      </div>
+      <button type="button" class="cv-floating-ball" aria-label="CardVault 快捷操作" title="CardVault · 拖动悬浮球 / 点击展开">
+        <i class="fa-solid fa-box-archive"></i>
+        <span class="cv-floating-online" aria-hidden="true"></span>
+      </button>`;
+    document.body.append(root);
+
+    const ball = root.querySelector('.cv-floating-ball');
+    const menu = root.querySelector('.cv-floating-menu');
+    const actions = [...root.querySelectorAll('.cv-floating-action')];
+    const size = 58;
+    let x = Math.max(8, window.innerWidth - size - 18);
+    let y = Math.max(8, window.innerHeight - size - 110);
+    let dragging = false;
+    let moved = false;
+    let activePointerId = null;
+    let startX = 0;
+    let startY = 0;
+    let startLeft = 0;
+    let startTop = 0;
+    let busy = false;
+
+    try {
+        const saved = JSON.parse(localStorage.getItem(CARDVAULT_FLOAT_POSITION_KEY) || 'null');
+        if (Number.isFinite(saved?.x) && Number.isFinite(saved?.y)) {
+            x = saved.x;
+            y = saved.y;
+        }
+    } catch (_) {}
+
+    const clampPosition = () => {
+        x = Math.min(Math.max(8, x), Math.max(8, window.innerWidth - size - 8));
+        y = Math.min(Math.max(8, y), Math.max(8, window.innerHeight - size - 8));
+    };
+
+    const place = () => {
+        clampPosition();
+        root.style.left = `${Math.round(x)}px`;
+        root.style.top = `${Math.round(y)}px`;
+        const opensRight = x < window.innerWidth / 2;
+        root.dataset.side = opensRight ? 'right' : 'left';
+        // 菜单保持在可视区内，悬浮球贴近顶部/底部时也不会被裁掉。
+        const estimatedHeight = 204;
+        const naturalTop = (size - estimatedHeight) / 2;
+        const minTop = 8 - y;
+        const maxTop = window.innerHeight - y - estimatedHeight - 8;
+        menu.style.top = `${Math.round(Math.min(Math.max(naturalTop, minTop), maxTop))}px`;
+    };
+
+    const savePosition = () => {
+        try { localStorage.setItem(CARDVAULT_FLOAT_POSITION_KEY, JSON.stringify({ x: Math.round(x), y: Math.round(y) })); } catch (_) {}
+    };
+
+    const setMenuOpen = open => {
+        const next = !!open && !busy;
+        root.classList.toggle('is-open', next);
+        ball.setAttribute('aria-expanded', next ? 'true' : 'false');
+    };
+
+    const setBusy = (value, label = '') => {
+        busy = !!value;
+        root.classList.toggle('is-busy', busy);
+        ball.disabled = busy;
+        if (label) ball.title = label;
+        else ball.title = 'CardVault · 拖动悬浮球 / 点击展开';
+        actions.forEach(button => { button.disabled = busy; });
+        if (busy) setMenuOpen(false);
+    };
+
+    const runAction = async (action) => {
+        if (busy) return;
+        setBusy(true, 'CardVault 正在处理……');
+        try {
+            if (!await verify({ quiet: true })) throw new Error('CardVault 自动登录失败');
+            if (action === 'open') {
+                await openLibrary();
+            } else if (action === 'backup') {
+                ball.title = 'CardVault · 正在备份当前角色';
+                await backupCurrentCharacter();
+            } else if (action === 'archive') {
+                await archiveAllAndCleanup(progress => {
+                    const charPart = `${progress.characterIndex || 0}/${progress.characterTotal || 0}`;
+                    const detail = progress.stage === 'chat' ? ` · 聊天 ${progress.current}/${progress.total}` : '';
+                    ball.title = `CardVault · 归档 ${charPart}${detail} ${progress.name || ''}`;
+                });
+            }
+        } catch (error) {
+            notify('error', error?.message || String(error));
+        } finally {
+            setBusy(false);
+        }
+    };
+
+    const onBallPointerDown = event => {
+        if (busy || event.button !== undefined && event.button !== 0) return;
+        activePointerId = event.pointerId;
+        dragging = false;
+        moved = false;
+        startX = event.clientX;
+        startY = event.clientY;
+        startLeft = x;
+        startTop = y;
+        try { ball.setPointerCapture(activePointerId); } catch (_) {}
+    };
+    const onBallPointerMove = event => {
+        if (activePointerId === null || event.pointerId !== activePointerId) return;
+        const dx = event.clientX - startX;
+        const dy = event.clientY - startY;
+        if (!dragging && Math.hypot(dx, dy) >= 5) {
+            dragging = true;
+            moved = true;
+            setMenuOpen(false);
+            root.classList.add('is-dragging');
+        }
+        if (!dragging) return;
+        event.preventDefault();
+        x = startLeft + dx;
+        y = startTop + dy;
+        place();
+    };
+    const onBallPointerUp = event => {
+        if (activePointerId === null || event.pointerId !== activePointerId) return;
+        try { ball.releasePointerCapture(activePointerId); } catch (_) {}
+        activePointerId = null;
+        if (dragging) savePosition();
+        dragging = false;
+        root.classList.remove('is-dragging');
+        if (moved) setTimeout(() => { moved = false; }, 0);
+    };
+    const onBallClick = event => {
+        event.preventDefault();
+        event.stopPropagation();
+        if (moved || busy) return;
+        setMenuOpen(!root.classList.contains('is-open'));
+    };
+    const onOutsidePointerDown = event => {
+        if (!root.contains(event.target)) setMenuOpen(false);
+    };
+    const onResize = () => { place(); savePosition(); };
+
+    ball.addEventListener('pointerdown', onBallPointerDown);
+    ball.addEventListener('pointermove', onBallPointerMove);
+    ball.addEventListener('pointerup', onBallPointerUp);
+    ball.addEventListener('pointercancel', onBallPointerUp);
+    ball.addEventListener('click', onBallClick);
+    actions.forEach(button => button.addEventListener('click', event => {
+        event.preventDefault();
+        event.stopPropagation();
+        const action = button.dataset.cvFloatAction;
+        setMenuOpen(false);
+        void runAction(action);
+    }));
+    document.addEventListener('pointerdown', onOutsidePointerDown, true);
+    window.addEventListener('resize', onResize);
+    place();
+
+    floatingBallCleanup = () => {
+        document.removeEventListener('pointerdown', onOutsidePointerDown, true);
+        window.removeEventListener('resize', onResize);
+        root.remove();
+    };
+}
+
 async function renderSettingsTemplate() {
     const response = await fetch(new URL('./settings.html', import.meta.url), { cache: 'no-store' });
     if (!response.ok) {
@@ -4450,7 +4683,7 @@ async function renderSettingsTemplate() {
 function bindSettings() {
     const cfg = extensionSettings();
     cfg.apiUrl = cleanBase(cfg.apiUrl || DEFAULT_SETTINGS.apiUrl);
-    cfg.username = String(cfg.username || DEFAULT_SETTINGS.username || 'card2').trim() || 'card2';
+    cfg.username = CARDVAULT_AUTO_LOGIN_USERNAME;
     refreshAuthIdentity();
     saveSettings();
 
@@ -4479,17 +4712,18 @@ function bindSettings() {
 
     const renderAccountIdentity = () => {
         const live = extensionSettings();
-        const username = String(live.username || 'card2').trim() || 'card2';
+        const username = CARDVAULT_AUTO_LOGIN_USERNAME;
+        live.username = username;
         const label = accountDisplayName(username);
         const isXAccount = username === 'card2' || username === 'x';
         if (policyHelp) {
-            policyHelp.textContent = `独立版 CardVault：酒馆账号 ${sillyTavernUserHandle || 'unknown'} 与云端卡库分离。可直接登录，也可在检测到现有 VVV 同源代理时优先复用代理。`;
+            policyHelp.textContent = `CardVault 已固定使用 card2，并启用自动登录与令牌失效自动重连；常用操作已移到可拖动悬浮球。`;
         }
         if (boundAccount) {
             boundAccount.dataset.account = username;
             boundAccount.innerHTML = `
               <span class="cv-account-icon"><i class="fa-solid ${isXAccount ? 'fa-user-lock' : 'fa-crown'}"></i></span>
-              <span class="cv-account-copy"><b>${escapeHtml(label)}</b><small>当前云端账号：${escapeHtml(username)}</small></span>
+              <span class="cv-account-copy"><b>${escapeHtml(label)}</b><small>固定云端账号：${escapeHtml(username)} · 自动登录</small></span>
               <span class="cv-account-check"><i class="fa-solid fa-cloud"></i></span>`;
         }
         if (passwordInput) passwordInput.placeholder = `输入 ${label} 卡库密码（不会保存密码）`;
@@ -4499,7 +4733,7 @@ function bindSettings() {
     const persistConnectionFields = () => {
         const live = extensionSettings();
         if (apiUrlInput) live.apiUrl = cleanBase(apiUrlInput.value || DEFAULT_SETTINGS.apiUrl);
-        if (usernameInput) live.username = String(usernameInput.value || DEFAULT_SETTINGS.username).trim() || DEFAULT_SETTINGS.username;
+        live.username = CARDVAULT_AUTO_LOGIN_USERNAME;
         if (preferProxyInput) live.preferServerProxy = !!preferProxyInput.checked;
         refreshAuthIdentity();
         verifiedTokenAccount = '';
@@ -4635,7 +4869,7 @@ function bindSettings() {
 
     const submitLogin = () => {
         try { persistConnectionFields(); } catch (error) { setStatus(error.message, 'error'); notify('error', error.message); return; }
-        login(passwordInput?.value || '').catch(error => {
+        login(CARDVAULT_AUTO_LOGIN_PASSWORD).catch(error => {
             setStatus(error.message, 'error');
             notify('error', error.message);
         });
@@ -4745,14 +4979,16 @@ async function initialize() {
         if (!container) throw new Error('找不到酒馆扩展设置区域');
         container.insertAdjacentHTML('beforeend', html);
         bindSettings();
+        installFloatingBall();
         const verified = await verify({ quiet: true });
+        startPermanentLoginKeepAlive();
         installImportGuardian();
         void tryRestorePendingVvvTheaterBundle().catch(error => console.warn('[CardVault] 延迟恢复0-32伴随档案失败', error));
         if (verified) {
             void refreshCardListFromServer().catch(error => console.warn('[CardVault] background card-list warmup skipped', error));
             void runImportGuardianSweep({ force: true });
         }
-        console.info(`[CardVault] Standalone 1.0.0 loaded: ST ${sillyTavernUserHandle} -> ${accountDisplayName(requiredCardVaultAccount())}; transport=${cardVaultTransportMode}`);
+        console.info(`[CardVault] Standalone 1.1.0 loaded: ST ${sillyTavernUserHandle} -> ${accountDisplayName(requiredCardVaultAccount())}; transport=${cardVaultTransportMode}`);
     } catch (error) {
         initialized = false;
         console.error('[CardVault] Initialization failed', error);
@@ -4769,7 +5005,7 @@ document.addEventListener('keydown', handleEscape);
 
 // Optional compatibility bridge: standalone CardVault can still be opened by an existing VVV shell if present.
 globalThis.VVVUnifiedCardVault = Object.assign(globalThis.VVVUnifiedCardVault || {}, {
-    version: '1.0.0-standalone',
+    version: '1.1.0-standalone',
     open: async () => { if (!initialized) await initialize(); return openLibrary(); },
     close: () => closeOverlay(),
     verify: (opts={quiet:true}) => verify(opts),
@@ -4782,6 +5018,7 @@ export async function onActivate() {
 }
 
 export function onDisable() {
+    stopPermanentLoginKeepAlive();
     removeCardVaultUi();
     for(const cleanup of importGuardianCleanups.splice(0)){try{cleanup();}catch(_){}}
     initialized = false;

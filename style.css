@@ -1558,3 +1558,118 @@ body.cv-no-scroll{
 }
 .cardvault-settings .cv-proxy-option>span{min-width:0;flex:1}
 .cardvault-settings .cv-proxy-option input[type="checkbox"]{flex:0 0 auto;min-width:18px;min-height:18px}
+
+
+/* ===== CardVault movable quick-action floating ball ===== */
+.cv-floating-root {
+    position: fixed;
+    width: 58px;
+    height: 58px;
+    z-index: 2147482500;
+    pointer-events: none;
+    user-select: none;
+    -webkit-user-select: none;
+    touch-action: none;
+}
+
+.cv-floating-ball {
+    position: absolute;
+    inset: 0;
+    width: 58px;
+    height: 58px;
+    border: 1px solid rgba(255,255,255,.24);
+    border-radius: 999px;
+    padding: 0;
+    display: grid;
+    place-items: center;
+    pointer-events: auto;
+    cursor: grab;
+    touch-action: none;
+    color: #fff;
+    font-size: 24px;
+    background: linear-gradient(145deg, rgba(190,151,92,.98), rgba(88,72,50,.98));
+    box-shadow: 0 10px 34px rgba(0,0,0,.45), inset 0 1px 0 rgba(255,255,255,.22);
+    backdrop-filter: blur(12px);
+    -webkit-backdrop-filter: blur(12px);
+    transition: transform .16s ease, box-shadow .16s ease, opacity .16s ease;
+}
+
+.cv-floating-ball:hover { transform: scale(1.055); box-shadow: 0 14px 38px rgba(0,0,0,.52), inset 0 1px 0 rgba(255,255,255,.26); }
+.cv-floating-root.is-dragging .cv-floating-ball { cursor: grabbing; transform: scale(1.08); }
+.cv-floating-root.is-busy .cv-floating-ball > i { animation: cvFloatSpin 1s linear infinite; }
+.cv-floating-root.is-busy .cv-floating-ball { cursor: progress; opacity: .92; }
+@keyframes cvFloatSpin { to { transform: rotate(360deg); } }
+
+.cv-floating-online {
+    position: absolute;
+    right: 3px;
+    bottom: 4px;
+    width: 12px;
+    height: 12px;
+    border-radius: 999px;
+    background: #6fdc8c;
+    border: 2px solid rgba(25,25,25,.95);
+    box-shadow: 0 0 0 1px rgba(255,255,255,.12);
+}
+
+.cv-floating-menu {
+    position: absolute;
+    width: min(292px, calc(100vw - 86px));
+    display: grid;
+    gap: 8px;
+    opacity: 0;
+    visibility: hidden;
+    transform: translateX(8px) scale(.96);
+    transform-origin: center;
+    pointer-events: none;
+    transition: opacity .14s ease, transform .14s ease, visibility .14s ease;
+    padding: 10px;
+    border-radius: 18px;
+    border: 1px solid rgba(255,255,255,.14);
+    background: rgba(21,21,21,.96);
+    box-shadow: 0 18px 46px rgba(0,0,0,.5);
+    backdrop-filter: blur(16px);
+    -webkit-backdrop-filter: blur(16px);
+}
+.cv-floating-root[data-side="right"] .cv-floating-menu { left: calc(100% + 12px); right: auto; }
+.cv-floating-root[data-side="left"] .cv-floating-menu { right: calc(100% + 12px); left: auto; transform: translateX(-8px) scale(.96); }
+.cv-floating-root.is-open .cv-floating-menu {
+    opacity: 1;
+    visibility: visible;
+    transform: translateX(0) scale(1);
+    pointer-events: auto;
+}
+
+.cv-floating-action {
+    min-height: 56px;
+    width: 100%;
+    border: 1px solid rgba(255,255,255,.09);
+    border-radius: 13px;
+    padding: 9px 11px;
+    display: grid;
+    grid-template-columns: 32px minmax(0,1fr);
+    align-items: center;
+    gap: 8px;
+    text-align: left;
+    color: var(--SmartThemeBodyColor, #eee);
+    background: rgba(255,255,255,.055);
+    cursor: pointer;
+}
+.cv-floating-action:hover { background: rgba(255,255,255,.105); border-color: rgba(218,177,112,.48); }
+.cv-floating-action > i { font-size: 18px; text-align: center; color: #d8b278; }
+.cv-floating-action span { min-width: 0; display: grid; gap: 2px; }
+.cv-floating-action b { font-size: 14px; line-height: 1.2; }
+.cv-floating-action small { font-size: 11px; line-height: 1.25; opacity: .68; white-space: normal; }
+.cv-floating-action-danger > i { color: #e0a46f; }
+
+.cv-floating-help { display: flex; align-items: flex-start; gap: 7px; }
+.cv-auth-card-auto .cv-login-button { margin-top: 2px; }
+
+@media (max-width: 600px) {
+    .cv-floating-root { width: 54px; height: 54px; }
+    .cv-floating-ball { width: 54px; height: 54px; font-size: 22px; }
+    .cv-floating-menu { width: min(272px, calc(100vw - 78px)); padding: 8px; border-radius: 16px; }
+    .cv-floating-root[data-side="right"] .cv-floating-menu { left: calc(100% + 9px); }
+    .cv-floating-root[data-side="left"] .cv-floating-menu { right: calc(100% + 9px); }
+    .cv-floating-action { min-height: 54px; }
+}
