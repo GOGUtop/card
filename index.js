@@ -4539,6 +4539,9 @@ function installFloatingBall() {
         <button type="button" class="cv-floating-action" data-cv-float-action="backup" role="menuitem">
           <i class="fa-solid fa-cloud-arrow-up"></i><span><b>备份当前角色</b><small>把当前酒馆角色备份到云端</small></span>
         </button>
+        <button type="button" class="cv-floating-action" data-cv-float-action="sync-return" role="menuitem">
+          <i class="fa-solid fa-cloud-arrow-up"></i><span><b>同步当前角色并归还</b><small>同步进度后归还当前角色到 CardVault</small></span>
+        </button>
         <button type="button" class="cv-floating-action cv-floating-action-danger" data-cv-float-action="archive" role="menuitem">
           <i class="fa-solid fa-boxes-packing"></i><span><b>完整归档并清理</b><small>归档角色、聊天、世界书后确认清理</small></span>
         </button>
@@ -4584,7 +4587,7 @@ function installFloatingBall() {
         const opensRight = x < window.innerWidth / 2;
         root.dataset.side = opensRight ? 'right' : 'left';
         // 菜单保持在可视区内，悬浮球贴近顶部/底部时也不会被裁掉。
-        const estimatedHeight = 204;
+        const estimatedHeight = 272;
         const naturalTop = (size - estimatedHeight) / 2;
         const minTop = 8 - y;
         const maxTop = window.innerHeight - y - estimatedHeight - 8;
@@ -4621,6 +4624,11 @@ function installFloatingBall() {
             } else if (action === 'backup') {
                 ball.title = 'CardVault · 正在备份当前角色';
                 await backupCurrentCharacter();
+            } else if (action === 'sync-return') {
+                ball.title = 'CardVault · 正在同步并归还当前角色';
+                await syncCurrentAndReturn(progress => {
+                    if (progress?.stage) ball.title = `CardVault · ${progress.stage}`;
+                });
             } else if (action === 'archive') {
                 await archiveAllAndCleanup(progress => {
                     const charPart = `${progress.characterIndex || 0}/${progress.characterTotal || 0}`;
