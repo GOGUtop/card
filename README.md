@@ -26,14 +26,17 @@ Anima 教程中的总结保存到“聊天世界书”，不是角色世界书�
 
 ## AI 分类持久化
 
-AI 分类现在由 **Full + Anima** 作为永久写入端，同时保存到两处：
+从 1.2.3 开始，**CardVault 云端是两个版本共享分类的主存储**。Full + Anima 会把当前账号的全部分类打包成一张内部 JSON 角色卡：
 
-1. SillyTavern 的 `extension_settings` 独立共享命名空间 `cardvault-ai-classifications-shared-v1`；
-2. 当前站点 `localStorage` 的镜像 `cardvault_ai_classifications_persistent_v1`。
+`__CardVault_AI_Classification_DB__card2`
 
-只读 Import-Only 版本会读取这两处并合并，因此在 Full + Anima 分类完成后，切换到 Import-Only 会直接显示同一批分类。卸载 / 重装 CardVault 不会主动删除这份共享分类库。
+然后通过现有 `/api/cards/import` 保存到 CardVault。这个方案不需要修改 CardVault 后端源码。插件自己的卡库列表会自动隐藏这张内部数据卡。
 
-> 如果同时清空 SillyTavern 的扩展设置文件和浏览器站点数据，分类仍会丢失。
+同时仍保留 SillyTavern `extension_settings` 与 `localStorage` 作为本机镜像/迁移来源。第一次运行 1.2.3 时，如果本机已有 244 张等旧分类而云端还没有，Full + Anima 会自动把它们迁移到 CardVault。
+
+Import-Only 只通过 GET 读取这张云端内部数据卡并显示分类，不负责写入。这样即使删除/重装插件、换浏览器或换设备，只要连接的是同一个 CardVault 账号且这张内部数据卡仍在，分类就可以恢复。
+
+> 不要在 CardVault 网站后台手动删除名称以 `__CardVault_AI_Classification_DB__` 开头的内部数据卡；删除它会失去云端分类主副本。
 
 ## 安装
 
@@ -50,7 +53,16 @@ settings.html
 
 ## 版本
 
-- Full + Anima: `1.2.2`
+### 1.2.3：分类真正同步到 CardVault + 悬浮球半隐藏吸边
+
+- AI 分类现在会打包进一张插件内部数据角色卡 `__CardVault_AI_Classification_DB__card2` 并通过现有 `/api/cards/import` 上传到 CardVault；无需修改 CardVault 后端源码。
+- 插件卡库自动隐藏这张内部数据卡；服务器里已有分类会在启动/刷新卡库时合并回来。
+- 第一次安装 1.2.3 时，Full+Anima 会把当前酒馆里已有的分类自动迁移到 CardVault 云端，无需重新分类 244 张卡。
+- Import-Only 只读取该云端分类数据库，不写入、不修改云端。
+- 悬浮球松手后吸进屏幕边缘约 50%，只露出半个球，减少遮挡。
+
+
+- Full + Anima: `1.2.3`
 - 基础源码：用户提供的 CardVault Standalone `1.1.2`
 
 ### 1.2.2：修复跨版本分类读取 + 强制吸边

@@ -6,6 +6,9 @@ const CARDVAULT_AUTO_LOGIN_PASSWORD = '2';
 const CARDVAULT_FLOAT_POSITION_KEY = 'cardvault_floating_ball_position_v1';
 const CARDVAULT_AI_PERSISTENT_KEY = 'cardvault_ai_classifications_persistent_v1';
 const CARDVAULT_AI_SHARED_SETTINGS_KEY = 'cardvault-ai-classifications-shared-v1';
+const CARDVAULT_AI_SERVER_CARD_PREFIX = '__CardVault_AI_Classification_DB__';
+const CARDVAULT_AI_SERVER_EXTENSION_KEY = 'cardvault_ai_classifications';
+const CARDVAULT_AI_SERVER_SCHEMA_VERSION = 1;
 const CARDVAULT_ANIMA_DB_NAME = 'cardvault-anima-worldbooks-v1';
 const CARDVAULT_ANIMA_DB_VERSION = 1;
 const CARDVAULT_ANIMA_STORE = 'snapshots';
@@ -293,6 +296,159 @@ function persistAiClassifications(records) {
         console.warn('[CardVault] localStorage AI 分类镜像写入失败', error);
     }
     writeSharedSettingsAiClassifications(persistentAiClassificationCache);
+}
+
+
+let serverAiClassificationLoadPromise = null;
+let serverAiClassificationRecords = {};
+
+function isServerAiClassificationCardSummary(card) {
+    return String(card?.name || '').startsWith(CARDVAULT_AI_SERVER_CARD_PREFIX);
+}
+
+function serverAiClassificationCardName() {
+    return `${CARDVAULT_AI_SERVER_CARD_PREFIX}${requiredCardVaultAccount()}`;
+}
+
+function stableClassificationMapText(records) {
+    const map = normalizeClassificationRecordMap(records);
+    const ordered = {};
+    for (const key of Object.keys(map).sort()) {
+        const value = map[key];
+        if (!value || typeof value !== 'object' || !Array.isArray(value.tags)) continue;
+        ordered[key] = value;
+    }
+    return JSON.stringify(ordered);
+}
+
+function classificationRecordsForCurrentAccount(records) {
+    const prefix = `${requiredCardVaultAccount()}:`;
+    const out = {};
+    for (const [key, value] of Object.entries(normalizeClassificationRecordMap(records))) {
+        if (key.startsWith(prefix) && value && typeof value === 'object' && Array.isArray(value.tags)) out[key] = value;
+    }
+    return out;
+}
+
+function extractServerAiClassificationPayload(card) {
+    try {
+        const data = valueFromCard(card);
+        const bucket = data?.extensions?.[CARDVAULT_AI_SERVER_EXTENSION_KEY];
+        if (!bucket || typeof bucket !== 'object') return null;
+        const account = String(bucket.account || '').trim();
+        if (account && account !== requiredCardVaultAccount()) return null;
+        return {
+            account: account || requiredCardVaultAccount(),
+            updatedAt: String(bucket.updatedAt || ''),
+            records: normalizeClassificationRecordMap(bucket.records),
+        };
+    } catch (error) {
+        console.warn('[CardVault] 无法解析云端 AI 分类数据库卡', error);
+        return null;
+    }
+}
+
+function buildServerAiClassificationCard(records) {
+    const account = requiredCardVaultAccount();
+    const cleanRecords = classificationRecordsForCurrentAccount(records);
+    const now = new Date().toISOString();
+    return {
+        spec: 'chara_card_v2',
+        spec_version: '2.0',
+        data: {
+            name: serverAiClassificationCardName(),
+            description: 'CardVault 内部 AI 分类数据库。请勿作为普通角色卡使用或删除。',
+            personality: '',
+            scenario: '',
+            first_mes: 'CardVault AI classification database.',
+            mes_example: '',
+            creator_notes: 'CardVault internal data card. Plugin UI automatically hides this card.',
+            system_prompt: '',
+            post_history_instructions: '',
+            alternate_greetings: [],
+            tags: ['__cardvault_internal__', 'AI分类数据库'],
+            creator: 'CardVault',
+            character_version: now,
+            extensions: {
+                [CARDVAULT_AI_SERVER_EXTENSION_KEY]: {
+                    schemaVersion: CARDVAULT_AI_SERVER_SCHEMA_VERSION,
+                    account,
+                    taxonomyVersion: currentClassificationTaxonomyVersion(),
+                    updatedAt: now,
+                    records: cleanRecords,
+                },
+            },
+        },
+    };
+}
+
+async function uploadServerAiClassificationSnapshot(records, { quiet = false } = {}) {
+    const cleanRecords = classificationRecordsForCurrentAccount(records);
+    if (!Object.keys(cleanRecords).length) return { skipped: true, reason: 'empty' };
+    const card = buildServerAiClassificationCard(cleanRecords);
+    const blob = new Blob([JSON.stringify(card)], { type: 'application/json' });
+    const result = await uploadBlobToCardVault(blob, `${serverAiClassificationCardName()}.json`, 'application/json');
+    serverAiClassificationRecords = mergeClassificationRecordMaps(serverAiClassificationRecords, cleanRecords);
+    if (!quiet) notify('success', `AI 分类已同步到 CardVault 云端（${Object.keys(cleanRecords).length} 张）`);
+    return result;
+}
+
+async function hydrateServerAiClassificationsFromCardList(cards, { allowUpload = true } = {}) {
+    if (serverAiClassificationLoadPromise) return serverAiClassificationLoadPromise;
+    serverAiClassificationLoadPromise = (async () => {
+        const all = Array.isArray(cards) ? cards : [];
+        let internalCards = all.filter(isServerAiClassificationCardSummary);
+        // 即使主卡库接口未来出现默认分页/上限，也单独按内部卡名前缀搜索一次，确保只读版一定能找到分类库。
+        try {
+            const searched = await apiFetch(`/api/cards?q=${encodeURIComponent(CARDVAULT_AI_SERVER_CARD_PREFIX)}`, { timeoutMs: 30000 });
+            const extra = Array.isArray(searched?.cards) ? searched.cards.filter(isServerAiClassificationCardSummary) : [];
+            const byId = new Map();
+            for (const item of [...internalCards, ...extra]) if (item?.id != null) byId.set(String(item.id), item);
+            internalCards = [...byId.values()];
+        } catch (error) {
+            console.warn('[CardVault] 单独搜索云端 AI 分类数据库卡失败，将继续使用主卡库结果', error);
+        }
+        internalCards = internalCards
+            .sort((a, b) => (Date.parse(b?.updatedAt || '') || 0) - (Date.parse(a?.updatedAt || '') || 0))
+            .slice(0, 12);
+        let serverRecords = {};
+        for (const summary of internalCards) {
+            try {
+                const detail = await apiFetch(`/api/cards/${encodeURIComponent(summary.id)}`, { timeoutMs: 30000 });
+                const payload = extractServerAiClassificationPayload(detail);
+                if (payload?.records) serverRecords = mergeClassificationRecordMaps(serverRecords, payload.records);
+            } catch (error) {
+                console.warn('[CardVault] 读取云端 AI 分类数据库卡失败', summary?.id, error);
+            }
+        }
+        serverAiClassificationRecords = serverRecords;
+
+        const cfg = extensionSettings();
+        const localRecords = mergeClassificationRecordMaps(loadPersistentAiClassifications({ refresh: true }), cfg.aiClassifications || {});
+        const merged = mergeClassificationRecordMaps(serverRecords, localRecords);
+        cfg.aiClassifications = merged;
+        persistAiClassifications(merged);
+        saveSettings();
+
+        if (allowUpload) {
+            const serverText = stableClassificationMapText(classificationRecordsForCurrentAccount(serverRecords));
+            const mergedText = stableClassificationMapText(classificationRecordsForCurrentAccount(merged));
+            if (mergedText !== '{}' && mergedText !== serverText) {
+                try {
+                    await uploadServerAiClassificationSnapshot(merged, { quiet: true });
+                    console.info(`[CardVault] 已把本地永久分类迁移/同步到 CardVault 云端：${Object.keys(classificationRecordsForCurrentAccount(merged)).length} 张`);
+                } catch (error) {
+                    console.warn('[CardVault] AI 分类云端迁移失败；本地分类仍保留，下次会继续尝试', error);
+                }
+            }
+        }
+        return merged;
+    })();
+    try {
+        return await serverAiClassificationLoadPromise;
+    } finally {
+        serverAiClassificationLoadPromise = null;
+    }
 }
 
 function mergePersistentAiClassifications(cfg) {
@@ -977,7 +1133,7 @@ function installInteractiveCardFallbacks() {
     }
 
     globalThis.cardVaultSeikanFallback = {
-        version: '1.2.2-full-anima',
+        version: '1.2.3-full-anima',
         rescan: () => rescanSeikanInteractiveRoots(document, { deepShadowScan: true }),
         send: role => sendSeikanRoleChoice(role),
         testOwner: () => sendSeikanRoleChoice('owner'),
@@ -2834,6 +2990,14 @@ async function runAiClassification({ forceAll = false, onlyFailed = false } = {}
             renderLoadedCards();
             paintLibraryMode();
         }
+        if (done > 0) {
+            try {
+                await uploadServerAiClassificationSnapshot(extensionSettings().aiClassifications, { quiet: true });
+            } catch (error) {
+                console.warn('[CardVault] 本轮 AI 分类已保存到酒馆本地，但同步 CardVault 云端失败', error);
+                notify('warning', `AI 分类本地已保存，但云端同步失败：${error?.message || error}`);
+            }
+        }
         const prefix = forceAll ? '重新分类' : onlyFailed ? '失败卡重试' : '增量分类';
         const skipped = forceAll || onlyFailed ? 0 : alreadyClassified.length;
         notify(
@@ -2855,7 +3019,9 @@ async function refreshCardListFromServer() {
     if (cardListRefreshPromise) return cardListRefreshPromise;
     cardListRefreshPromise = (async () => {
         const result = await apiFetch('/api/cards?q=', { timeoutMs: 30000 });
-        const cards = Array.isArray(result?.cards) ? result.cards : [];
+        const allCards = Array.isArray(result?.cards) ? result.cards : [];
+        await hydrateServerAiClassificationsFromCardList(allCards, { allowUpload: true });
+        const cards = allCards.filter(card => !isServerAiClassificationCardSummary(card));
         writeCardListCache(cards);
         return cards;
     })();
@@ -3045,7 +3211,7 @@ async function loadCards(query = '', options = {}) {
         loadedCards = freshCards;
         writeCardListCache(loadedCards);
         document.querySelector('.cv-window')?.classList.remove('cv-using-cache');
-        if (changed || options.force) renderLoadedCards();
+        renderLoadedCards();
     } catch (error) {
         if (!loadedCards.length) throw error;
         console.warn('[CardVault] 后台刷新卡库失败，继续使用本地缓存', error);
@@ -4913,7 +5079,7 @@ function installFloatingBall() {
           <i class="fa-solid fa-boxes-packing"></i><span><b>完整归档并清理</b><small>归档角色、聊天、世界书后确认清理</small></span>
         </button>
       </div>
-      <button type="button" class="cv-floating-ball" aria-label="CardVault 快捷操作" title="CardVault · 拖动后自动吸边 / 点击展开">
+      <button type="button" class="cv-floating-ball" aria-label="CardVault 快捷操作" title="CardVault · 拖动后自动半隐藏吸边 / 点击展开">
         <i class="fa-solid fa-box-archive"></i>
         <span class="cv-floating-online" aria-hidden="true"></span>
       </button>`;
@@ -4923,7 +5089,7 @@ function installFloatingBall() {
     const menu = root.querySelector('.cv-floating-menu');
     const actions = [...root.querySelectorAll('.cv-floating-action')];
     let size = 58;
-    const edgeInset = 0;
+    const hiddenRatio = 0.5;
     let x = Math.max(8, window.innerWidth - size - 18);
     let y = Math.max(8, window.innerHeight - size - 110);
     let dragging = false;
@@ -4954,7 +5120,10 @@ function installFloatingBall() {
         measureSize();
         const width = viewportWidth();
         const height = viewportHeight();
-        x = Math.min(Math.max(edgeInset, x), Math.max(edgeInset, width - size - edgeInset));
+        const hidden = size * hiddenRatio;
+        const minX = -hidden;
+        const maxX = width - size + hidden;
+        x = Math.min(Math.max(minX, x), maxX);
         y = Math.min(Math.max(8, y), Math.max(8, height - size - 8));
     };
 
@@ -4985,8 +5154,9 @@ function installFloatingBall() {
     const snapToNearestEdge = ({ save = true, preferredSide = null } = {}) => {
         clampPosition();
         const width = viewportWidth();
-        const leftX = edgeInset;
-        const rightX = Math.max(edgeInset, width - size - edgeInset);
+        const hidden = size * hiddenRatio;
+        const leftX = -hidden;
+        const rightX = width - size + hidden;
         const centerX = x + size / 2;
         const side = preferredSide === 'left' || preferredSide === 'right'
             ? preferredSide
@@ -5008,7 +5178,7 @@ function installFloatingBall() {
         root.classList.toggle('is-busy', busy);
         ball.disabled = busy;
         if (label) ball.title = label;
-        else ball.title = 'CardVault · 拖动后自动吸边 / 点击展开';
+        else ball.title = 'CardVault · 拖动后自动半隐藏吸边 / 点击展开';
         actions.forEach(button => { button.disabled = busy; });
         if (busy) setMenuOpen(false);
     };
@@ -5068,9 +5238,6 @@ function installFloatingBall() {
         x = startLeft + dx;
         y = startTop + dy;
         // 靠近左右边缘时给出磁吸反馈；松手后无论在哪里都会贴到最近边缘。
-        const rightX = Math.max(edgeInset, viewportWidth() - size - edgeInset);
-        if (x <= 26) x = edgeInset;
-        else if (x >= rightX - 26) x = rightX;
         place();
     };
     const onBallPointerUp = event => {
@@ -5441,7 +5608,7 @@ async function initialize() {
             void refreshCardListFromServer().catch(error => console.warn('[CardVault] background card-list warmup skipped', error));
             void runImportGuardianSweep({ force: true });
         }
-        console.info(`[CardVault] Full Anima 1.2.2 loaded: ST ${sillyTavernUserHandle} -> ${accountDisplayName(requiredCardVaultAccount())}; transport=${cardVaultTransportMode}`);
+        console.info(`[CardVault] Full Anima 1.2.3 loaded: ST ${sillyTavernUserHandle} -> ${accountDisplayName(requiredCardVaultAccount())}; transport=${cardVaultTransportMode}`);
     } catch (error) {
         initialized = false;
         console.error('[CardVault] Initialization failed', error);
@@ -5458,7 +5625,7 @@ document.addEventListener('keydown', handleEscape);
 
 // Optional compatibility bridge: standalone CardVault can still be opened by an existing VVV shell if present.
 globalThis.VVVUnifiedCardVault = Object.assign(globalThis.VVVUnifiedCardVault || {}, {
-    version: '1.2.2-full-anima',
+    version: '1.2.3-full-anima',
     open: async () => { if (!initialized) await initialize(); return openLibrary(); },
     close: () => closeOverlay(),
     verify: (opts={quiet:true}) => verify(opts),

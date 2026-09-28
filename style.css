@@ -1604,6 +1604,10 @@ body.cv-no-scroll{
 .cv-floating-root.is-busy .cv-floating-ball { cursor: progress; opacity: .92; }
 @keyframes cvFloatSpin { to { transform: rotate(360deg); } }
 
+
+.cv-floating-root[data-snapped="left"] .cv-floating-online { right: 3px; left: auto; }
+.cv-floating-root[data-snapped="right"] .cv-floating-online { left: 3px; right: auto; }
+
 .cv-floating-online {
     position: absolute;
     right: 3px;
