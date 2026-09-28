@@ -1,5 +1,11 @@
 # Changelog
 
+## 1.2.2
+
+- 永久 AI 分类新增 SillyTavern `extension_settings` 独立共享命名空间，并继续保留 localStorage 镜像。
+- Full + Anima 分类结果可被 Import-Only 直接读取；旧 localStorage 分类会自动迁移/合并。
+- 悬浮球改为 0px 真正贴边，保存左右 side；新增移动端窗口级 pointerup/pointercancel 兜底与布局后二次吸边。
+
 ## 1.2.1
 
 - Full + Anima 成为永久 AI 分类唯一写入端，并继续使用共享持久键，卸载 / 重装不清除。

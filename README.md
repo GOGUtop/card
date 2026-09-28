@@ -26,9 +26,14 @@ Anima 教程中的总结保存到“聊天世界书”，不是角色世界书�
 
 ## AI 分类持久化
 
-AI 分类除了原来的扩展设置，还会镜像到 SillyTavern 站点的 `localStorage`。`onClean()` 不再删除这份分类缓存，因此卸载 / 重装扩展后会自动合并回分类结果，避免重复消耗分类 API。
+AI 分类现在由 **Full + Anima** 作为永久写入端，同时保存到两处：
 
-> 同样地，清理浏览器站点数据会删除这份缓存。
+1. SillyTavern 的 `extension_settings` 独立共享命名空间 `cardvault-ai-classifications-shared-v1`；
+2. 当前站点 `localStorage` 的镜像 `cardvault_ai_classifications_persistent_v1`。
+
+只读 Import-Only 版本会读取这两处并合并，因此在 Full + Anima 分类完成后，切换到 Import-Only 会直接显示同一批分类。卸载 / 重装 CardVault 不会主动删除这份共享分类库。
+
+> 如果同时清空 SillyTavern 的扩展设置文件和浏览器站点数据，分类仍会丢失。
 
 ## 安装
 
@@ -45,11 +50,11 @@ settings.html
 
 ## 版本
 
-- Full + Anima: `1.2.1`
+- Full + Anima: `1.2.2`
 - 基础源码：用户提供的 CardVault Standalone `1.1.2`
 
-### 1.2.1：共享永久分类 + 悬浮球吸边
+### 1.2.2：修复跨版本分类读取 + 强制吸边
 
-- **只有 Full + Anima 版本负责写入永久 AI 分类**：分类结果写入 SillyTavern 站点共享 `localStorage` 键 `cardvault_ai_classifications_persistent_v1`，卸载 / 重装插件时不会删除。
-- **Import-Only 版本读取同一份共享分类**：在本版本完成分类后，切换到 Import-Only 仍可看到标签并用于筛选。
-- 悬浮球拖动松手后会自动吸附到最近的左 / 右屏幕边缘，刷新后保持吸边位置。
+- **只有 Full + Anima 负责永久写入**：分类同时写入 SillyTavern 共享设置命名空间和 localStorage 镜像。
+- **Import-Only 实时读取同一共享库**：不再依赖一次性内存缓存，切换版本后可直接显示 Full + Anima 已完成的分类。
+- 悬浮球改为 0px 贴边，保存左右 `side` 而不是旧横坐标；加入移动端窗口级 `pointerup` 兜底和二次布局复算，拖动松手后强制吸附到最近左右边缘。
