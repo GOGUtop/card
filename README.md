@@ -1,37 +1,38 @@
-# CardVault · SillyTavern Standalone
+# CardVault · Full · Anima 世界书
 
-这是从 `fixed133` 中单独提取出来的 **CardVault 云端卡库**，已经整理成可直接放到 GitHub 仓库根目录、再由 SillyTavern 通过 Git 仓库 URL 安装/更新的第三方扩展。
+这是完整功能版源码，基于用户提供的 `card-main` 源码修改。
 
-## 保留的功能
+## 顶部三个页面
 
-- CardVault 云端角色卡浏览、搜索、封面懒加载
-- 上传本地 PNG / JSON 角色卡
-- 备份当前角色 / 批量备份全部角色
-- 游玩备份（角色 PNG、完整角色 JSON、聊天 JSONL、卡内世界书、Scoped Regex、绑定世界书）
-- 从 CardVault 恢复角色、聊天、世界书
-- 批量恢复、同步当前角色并归还 CardVault
-- 已归档世界书清理保护
-- AI 角色卡分类（独立 OpenAI 兼容 API）
-- 手机/桌面布局与原 CardVault 界面
-- 原有导入守护逻辑
-- 如果 0-32 桥存在，会继续尝试携带/恢复 0-32 伴随档案；如果不存在，不再阻止普通 CardVault 归档
+- **角色卡库**：保留上传、AI 分类、批量管理、自动导入酒馆等原功能。
+- **游玩备份**：保留角色 PNG、完整角色 JSON、聊天 JSONL、绑定世界书等原有归档 / 恢复功能。
+- **Anima世界书**：新增独立页面，用于保存当前聊天绑定的 Chat Lorebook，并可恢复到任意当前聊天。
 
-## 独立版连接方式
+## Anima 世界书保存方式
 
-1. **优先同源代理（默认开启）**
-   - 如果当前 SillyTavern 仍装有原 VVV `vvv-theater-memory-server` CardVault 代理，会自动复用。
-   - 浏览器不需要保存 CardVault 密码。
+Anima 教程中的总结保存到“聊天世界书”，不是角色世界书。本版本直接读取 SillyTavern 当前聊天的 `chatMetadata.world_info`，将完整世界书 JSON 保存到 SillyTavern 当前站点的 IndexedDB。
 
-2. **独立直连**
-   - 没检测到 VVV 代理时，直接连接设置里的 CardVault API 地址。
-   - 输入云端账号和密码登录。
-   - 密码不会写入扩展设置；仅保存服务端返回的登录 token。
+保存记录按：
 
-> 如果 SillyTavern 页面是 HTTPS，而 CardVault API 仍是 HTTP，浏览器可能阻止“混合内容”。此时使用同源代理或给 CardVault API 配 HTTPS。
+`角色 + 聊天 + 聊天世界书`
 
-## GitHub 订阅安装
+区分。同一角色不同聊天不会互相覆盖。恢复时会：
 
-把本目录的文件放在 GitHub 仓库**根目录**，至少要有：
+1. 把完整 JSON 写回 SillyTavern 世界书；
+2. 将该世界书设置为当前聊天的 Chat Lorebook；
+3. 不修改角色卡自身的角色世界书绑定。
+
+> IndexedDB 属于 SillyTavern 站点数据。卸载 / 重装这个扩展不会主动删除它；如果手动清理浏览器站点数据或换域名，则本地保险箱数据可能丢失。
+
+## AI 分类持久化
+
+AI 分类除了原来的扩展设置，还会镜像到 SillyTavern 站点的 `localStorage`。`onClean()` 不再删除这份分类缓存，因此卸载 / 重装扩展后会自动合并回分类结果，避免重复消耗分类 API。
+
+> 同样地，清理浏览器站点数据会删除这份缓存。
+
+## 安装
+
+将本目录作为 SillyTavern 第三方扩展仓库根目录，至少保留：
 
 ```text
 manifest.json
@@ -40,41 +41,15 @@ style.css
 settings.html
 ```
 
-然后在 SillyTavern：
-
-`扩展 → 安装扩展 → 粘贴 GitHub 仓库 URL`
-
-例如：
-
-```text
-https://github.com/你的用户名/CardVault-SillyTavern-Standalone
-```
-
-`manifest.json` 已设置 `auto_update: true`，后续可通过 SillyTavern 扩展管理器检查更新。
-
-## 从 fixed133 独立出来后的边界
-
-这个仓库**不加载**：
-
-- A 作者预设
-- 作家审稿/作家记忆/问作者/平行世界
-- AI 接力
-- 0-32 主界面与小手机
-- VVV 全域中枢
-
-只保留 CardVault 本身。对 VVV/0-32 的调用都按“可选兼容桥”处理。
-
-## 设置兼容
-
-仍沿用扩展设置键：
-
-```text
-cardvault-sillytavern-extension
-```
-
-因此同一个 SillyTavern 用户下，从原 fixed133 迁移到独立版时，CardVault 的大部分本地设置（分类 API、分类结果、游玩备份映射等）可继续复用。
+然后通过 SillyTavern 的“扩展 → 安装扩展”使用 Git 仓库 URL 安装。
 
 ## 版本
 
-- Standalone: `1.0.0`
-- 提取源：VVV fixed133 CardVault `0.4.34-fixed79`
+- Full + Anima: `1.2.1`
+- 基础源码：用户提供的 CardVault Standalone `1.1.2`
+
+### 1.2.1：共享永久分类 + 悬浮球吸边
+
+- **只有 Full + Anima 版本负责写入永久 AI 分类**：分类结果写入 SillyTavern 站点共享 `localStorage` 键 `cardvault_ai_classifications_persistent_v1`，卸载 / 重装插件时不会删除。
+- **Import-Only 版本读取同一份共享分类**：在本版本完成分类后，切换到 Import-Only 仍可看到标签并用于筛选。
+- 悬浮球拖动松手后会自动吸附到最近的左 / 右屏幕边缘，刷新后保持吸边位置。

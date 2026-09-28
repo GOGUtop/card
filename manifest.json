@@ -1,9 +1,9 @@
 {
   "manifest_version": 1,
   "id": "cardvault_sillytavern_extension",
-  "display_name": "CardVault · 云端卡库 · Standalone",
-  "version": "1.1.2",
-  "description": "CardVault Standalone：悬浮球快捷操作、固定 card2 自动登录；AI 分类强制使用标签面板中的封闭标签集合，禁止生成列表外分类。",
+  "display_name": "CardVault · Full · Anima世界书",
+  "version": "1.2.1",
+  "description": "CardVault 完整版：角色卡库、游玩备份、Anima 聊天世界书保险箱；AI 分类由本版本永久写入共享缓存，卸载重装仍保留，并可被只读导入版读取；悬浮球拖动后自动吸边。",
   "author": "小狗主理人 × vvv",
   "loading_order": 25,
   "requires": [],

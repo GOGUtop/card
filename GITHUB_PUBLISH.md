@@ -1,24 +1,7 @@
-# 发布到 GitHub
+# GitHub 发布
 
-先在 GitHub 新建一个空仓库，例如：
+将本目录全部文件放在仓库根目录，推送后在 SillyTavern 中使用仓库 URL 安装。
 
-`CardVault-SillyTavern-Standalone`
+本版本是 **完整功能版**：角色卡库 + 游玩备份 + Anima世界书。
 
-然后在本目录执行：
-
-```bash
-git init
-git add .
-git commit -m "CardVault standalone 1.0.0"
-git branch -M main
-git remote add origin https://github.com/你的用户名/CardVault-SillyTavern-Standalone.git
-git push -u origin main
-```
-
-发布完成后，SillyTavern 里的订阅/安装地址就是：
-
-```text
-https://github.com/你的用户名/CardVault-SillyTavern-Standalone
-```
-
-更新时只要提交新版本并推送到同一个仓库；同时递增 `manifest.json` 里的 `version`。
+`manifest.json` 版本：`1.2.1`。

@@ -4,6 +4,10 @@ const EXTENSION_NAME = 'cardvault-sillytavern-extension';
 const CARDVAULT_AUTO_LOGIN_USERNAME = 'card2';
 const CARDVAULT_AUTO_LOGIN_PASSWORD = '2';
 const CARDVAULT_FLOAT_POSITION_KEY = 'cardvault_floating_ball_position_v1';
+const CARDVAULT_AI_PERSISTENT_KEY = 'cardvault_ai_classifications_persistent_v1';
+const CARDVAULT_ANIMA_DB_NAME = 'cardvault-anima-worldbooks-v1';
+const CARDVAULT_ANIMA_DB_VERSION = 1;
+const CARDVAULT_ANIMA_STORE = 'snapshots';
 const LEGACY_GLOBAL_PERSISTENT_TOKEN_KEY = 'cardvault_persistent_token_v2';
 const LEGACY_SESSION_TOKEN_KEY = 'cardvault_session_token_v1';
 const CARDVAULT_ACCESS_POLICY = Object.freeze({
@@ -121,6 +125,7 @@ let playArchiveServerMeta = { pagination:'unknown', total:null, loaded:0 };
 let loadedCards = [];
 let visibleCards = [];
 let visiblePlayArchives = [];
+let visibleAnimaWorldbooks = [];
 let currentLibraryQuery = '';
 let currentLibraryMode = 'cards';
 let currentAiCategoryFilter = '全部';
@@ -142,6 +147,7 @@ let cardListRefreshPromise = null;
 const libraryViewState = {
     cards: { query: '', scrollTop: 0, anchorId: '', anchorOffset: 0, category: '全部' },
     play: { query: '', scrollTop: 0, anchorId: '', anchorOffset: 0 },
+    anima: { query: '', scrollTop: 0, anchorId: '', anchorOffset: 0 },
 };
 
 function context() {
@@ -205,6 +211,50 @@ function removeCardVaultUi() {
     document.querySelectorAll('#cardvault_settings').forEach(node => node.remove());
 }
 
+
+let persistentAiClassificationCache = null;
+let persistentAiMergedIntoSettings = false;
+
+function loadPersistentAiClassifications() {
+    if (persistentAiClassificationCache) return persistentAiClassificationCache;
+    try {
+        const raw = globalThis.localStorage?.getItem(CARDVAULT_AI_PERSISTENT_KEY) || '';
+        const parsed = raw ? JSON.parse(raw) : {};
+        persistentAiClassificationCache = parsed && typeof parsed === 'object' && !Array.isArray(parsed) ? parsed : {};
+    } catch (error) {
+        console.warn('[CardVault] 无法读取永久 AI 分类缓存', error);
+        persistentAiClassificationCache = {};
+    }
+    return persistentAiClassificationCache;
+}
+
+function persistAiClassifications(records) {
+    const value = records && typeof records === 'object' && !Array.isArray(records) ? records : {};
+    persistentAiClassificationCache = { ...value };
+    try {
+        globalThis.localStorage?.setItem(CARDVAULT_AI_PERSISTENT_KEY, JSON.stringify(persistentAiClassificationCache));
+    } catch (error) {
+        console.warn('[CardVault] 永久 AI 分类缓存写入失败', error);
+    }
+}
+
+function mergePersistentAiClassifications(cfg) {
+    if (persistentAiMergedIntoSettings) return;
+    const persisted = loadPersistentAiClassifications();
+    const local = cfg.aiClassifications || {};
+    const merged = { ...persisted };
+    for (const [key, record] of Object.entries(local)) {
+        const existing = merged[key];
+        const existingTime = Date.parse(existing?.classifiedAt || '') || 0;
+        const localTime = Date.parse(record?.classifiedAt || '') || 0;
+        if (!existing || localTime >= existingTime) merged[key] = record;
+    }
+    cfg.aiClassifications = merged;
+    // Full+Anima 是永久分类的唯一写入端；Import-Only 读取同一 key。
+    persistAiClassifications(cfg.aiClassifications);
+    persistentAiMergedIntoSettings = true;
+}
+
 function extensionSettings() {
     const ctx = context();
     const root = ctx.extensionSettings || globalThis.extension_settings;
@@ -226,6 +276,7 @@ function extensionSettings() {
     }
     cfg.playArchiveMap = cfg.playArchiveMap && typeof cfg.playArchiveMap === 'object' ? cfg.playArchiveMap : {};
     cfg.aiClassifications = cfg.aiClassifications && typeof cfg.aiClassifications === 'object' ? cfg.aiClassifications : {};
+    mergePersistentAiClassifications(cfg);
     cfg.classifierModels = Array.isArray(cfg.classifierModels) ? cfg.classifierModels : [];
     cfg.importGuardianMap = cfg.importGuardianMap && typeof cfg.importGuardianMap === 'object' ? cfg.importGuardianMap : {};
     return cfg;
@@ -873,7 +924,7 @@ function installInteractiveCardFallbacks() {
     }
 
     globalThis.cardVaultSeikanFallback = {
-        version: '1.1.0-standalone',
+        version: '1.2.1-full-anima',
         rescan: () => rescanSeikanInteractiveRoots(document, { deepShadowScan: true }),
         send: role => sendSeikanRoleChoice(role),
         testOwner: () => sendSeikanRoleChoice('owner'),
@@ -1364,8 +1415,12 @@ function bindLazyCoverLoading(root = document, reset = true) {
     });
 }
 
+function normalizeLibraryMode(mode) {
+    return mode === 'play' || mode === 'anima' ? mode : 'cards';
+}
+
 function copyLibraryViewState(mode) {
-    const state = libraryViewState[mode === 'play' ? 'play' : 'cards'];
+    const state = libraryViewState[normalizeLibraryMode(mode)];
     return { ...state };
 }
 
@@ -1380,7 +1435,7 @@ function captureLibraryPosition(itemId = '') {
     state.anchorOffset = 0;
     if (state.anchorId) {
         const article = [...body.querySelectorAll('.cv-card')].find(node => {
-            const id = node.dataset.cardId || node.dataset.archiveId || '';
+            const id = node.dataset.cardId || node.dataset.archiveId || node.dataset.animaId || '';
             return String(id) === state.anchorId;
         });
         if (article) state.anchorOffset = Number(article.offsetTop || 0) - state.scrollTop;
@@ -1393,7 +1448,7 @@ function restoreLibraryPosition(mode, state) {
     if (!body || !state) return;
     const apply = () => {
         const article = state.anchorId
-            ? [...body.querySelectorAll('.cv-card')].find(node => String(node.dataset.cardId || node.dataset.archiveId || '') === String(state.anchorId))
+            ? [...body.querySelectorAll('.cv-card')].find(node => String(node.dataset.cardId || node.dataset.archiveId || node.dataset.animaId || '') === String(state.anchorId))
             : null;
         const target = article
             ? Math.max(0, Number(article.offsetTop || 0) - Number(state.anchorOffset || 0))
@@ -1408,7 +1463,7 @@ function restoreLibraryPosition(mode, state) {
 }
 
 async function returnToLibrary(mode, state) {
-    const normalized = mode === 'play' ? 'play' : 'cards';
+    const normalized = normalizeLibraryMode(mode);
     const restore = { ...libraryViewState[normalized], ...(state || {}) };
     libraryViewState[normalized] = { ...restore };
     createOverlay(normalized, { preserveState: true });
@@ -1430,7 +1485,8 @@ function createOverlay(mode = 'cards', options = {}) {
     loadedCards = [];
     visibleCards = [];
     visiblePlayArchives = [];
-    currentLibraryMode = mode === 'play' ? 'play' : 'cards';
+    visibleAnimaWorldbooks = [];
+    currentLibraryMode = normalizeLibraryMode(mode);
     if (options.preserveState) {
         const state = libraryViewState[currentLibraryMode];
         currentLibraryQuery = String(state.query || '');
@@ -1448,10 +1504,11 @@ function createOverlay(mode = 'cards', options = {}) {
     overlay.innerHTML = `
       <section class="cv-window" role="dialog" aria-modal="true" aria-label="CardVault 云端卡库">
         <header class="cv-header cv-header-with-switch">
-          <div class="cv-brand"><i class="fa-solid fa-box-archive"></i><div><b>CardVault</b><small>角色卡与游玩备份</small></div></div>
+          <div class="cv-brand"><i class="fa-solid fa-box-archive"></i><div><b>CardVault</b><small>角色卡 · 游玩备份 · Anima世界书</small></div></div>
           <nav class="cv-library-switch" aria-label="CardVault 项目">
             <button class="menu_button" data-cv-mode="cards" type="button"><i class="fa-regular fa-address-card"></i><span>角色卡库</span></button>
             <button class="menu_button" data-cv-mode="play" type="button"><i class="fa-solid fa-gamepad"></i><span>游玩备份</span></button>
+            <button class="menu_button" data-cv-mode="anima" type="button"><i class="fa-solid fa-book-open-reader"></i><span>Anima世界书</span></button>
           </nav>
           <div class="cv-search-wrap"><i class="fa-solid fa-magnifying-glass"></i><input id="cv_library_search" class="text_pole" placeholder="搜索角色、作者或标签"></div>
           <button id="cv_ai_classify" class="menu_button cv-ai-classify-button" type="button" title="只分类新增 / 未分类角色卡；已分类卡不会重复调用"><i class="fa-solid fa-wand-magic-sparkles"></i><span>AI分类</span></button>
@@ -1521,8 +1578,8 @@ function paintLibraryMode() {
     const upload = overlay.querySelector('#cv_library_upload');
     const aiClassify = overlay.querySelector('#cv_ai_classify');
     const aiRetry = overlay.querySelector('#cv_ai_retry_failed');
-    if (search) search.placeholder = currentLibraryMode === 'play' ? '搜索游玩备份' : '搜索角色、作者或标签';
-    if (manage) manage.hidden = false;
+    if (search) search.placeholder = currentLibraryMode === 'play' ? '搜索游玩备份' : currentLibraryMode === 'anima' ? '搜索 Anima 世界书、角色或聊天' : '搜索角色、作者或标签';
+    if (manage) manage.hidden = currentLibraryMode === 'anima';
     if (upload) upload.hidden = currentLibraryMode !== 'cards';
     if (aiClassify) {
         aiClassify.hidden = currentLibraryMode !== 'cards';
@@ -1533,7 +1590,7 @@ function paintLibraryMode() {
 }
 
 async function switchLibraryMode(mode) {
-    currentLibraryMode = mode === 'play' ? 'play' : 'cards';
+    currentLibraryMode = normalizeLibraryMode(mode);
     currentLibraryQuery = '';
     if (currentLibraryMode === 'cards') currentAiCategoryFilter = '全部';
     setSelectionMode(false);
@@ -1544,7 +1601,9 @@ async function switchLibraryMode(mode) {
 }
 
 async function loadCurrentLibrary(query = '') {
-    return currentLibraryMode === 'play' ? loadPlayArchives(query) : loadCards(query);
+    if (currentLibraryMode === 'play') return loadPlayArchives(query);
+    if (currentLibraryMode === 'anima') return loadAnimaWorldbooks(query);
+    return loadCards(query);
 }
 
 function setSelectionMode(enabled) {
@@ -1564,11 +1623,13 @@ function setSelectionMode(enabled) {
 }
 
 function currentVisibleLibraryItems() {
-    return currentLibraryMode === 'play' ? visiblePlayArchives : visibleCards;
+    if (currentLibraryMode === 'play') return visiblePlayArchives;
+    if (currentLibraryMode === 'anima') return visibleAnimaWorldbooks;
+    return visibleCards;
 }
 
 function itemIdFromNode(article) {
-    return String(article?.dataset?.cardId || article?.dataset?.archiveId || '');
+    return String(article?.dataset?.cardId || article?.dataset?.archiveId || article?.dataset?.animaId || '');
 }
 
 function syncCardSelectionUi() {
@@ -1653,6 +1714,7 @@ function clearSelection() {
 }
 
 function updateBulkBar() {
+    if (currentLibraryMode === 'anima') { const bar = document.querySelector('#cv_bulk_bar'); if (bar) bar.hidden = true; return; }
     const bar = document.querySelector('#cv_bulk_bar');
     const count = document.querySelector('#cv_selected_count');
     const deleteButton = document.querySelector('#cv_delete_selected');
@@ -1921,6 +1983,7 @@ function saveCardClassification(card, result) {
         fingerprint: classificationFingerprint(card),
         classifiedAt: new Date().toISOString(),
     };
+    persistAiClassifications(cfg.aiClassifications);
     saveSettings();
     return cfg.aiClassifications[classificationStorageKey(card.id)];
 }
@@ -2969,6 +3032,257 @@ async function fetchAllPlayArchives(query='', signal) {
         break;
     }
     return {archives:all,total:declaredTotal??all.length,pagination};
+}
+
+
+function openAnimaDatabase() {
+    return new Promise((resolve, reject) => {
+        if (!globalThis.indexedDB) return reject(new Error('当前浏览器不支持 IndexedDB，无法保存 Anima 世界书'));
+        const request = globalThis.indexedDB.open(CARDVAULT_ANIMA_DB_NAME, CARDVAULT_ANIMA_DB_VERSION);
+        request.onupgradeneeded = () => {
+            const db = request.result;
+            if (!db.objectStoreNames.contains(CARDVAULT_ANIMA_STORE)) {
+                const store = db.createObjectStore(CARDVAULT_ANIMA_STORE, { keyPath: 'id' });
+                store.createIndex('savedAt', 'savedAt', { unique: false });
+                store.createIndex('chatId', 'chatId', { unique: false });
+                store.createIndex('worldName', 'worldName', { unique: false });
+            }
+        };
+        request.onsuccess = () => resolve(request.result);
+        request.onerror = () => reject(request.error || new Error('无法打开 Anima 世界书数据库'));
+    });
+}
+
+async function animaDbRequest(mode, handler) {
+    const db = await openAnimaDatabase();
+    try {
+        return await new Promise((resolve, reject) => {
+            const tx = db.transaction(CARDVAULT_ANIMA_STORE, mode);
+            const store = tx.objectStore(CARDVAULT_ANIMA_STORE);
+            let request;
+            try { request = handler(store); } catch (error) { reject(error); return; }
+            if (request) {
+                request.onsuccess = () => resolve(request.result);
+                request.onerror = () => reject(request.error || new Error('Anima 世界书数据库操作失败'));
+            } else {
+                tx.oncomplete = () => resolve(true);
+            }
+            tx.onerror = () => reject(tx.error || new Error('Anima 世界书数据库事务失败'));
+        });
+    } finally { db.close(); }
+}
+
+async function listAnimaSnapshots() {
+    const rows = await animaDbRequest('readonly', store => store.getAll());
+    return (Array.isArray(rows) ? rows : []).sort((a, b) => String(b.savedAt || '').localeCompare(String(a.savedAt || '')));
+}
+async function getAnimaSnapshot(id) { return animaDbRequest('readonly', store => store.get(String(id))); }
+async function putAnimaSnapshot(row) { return animaDbRequest('readwrite', store => store.put(row)); }
+async function deleteAnimaSnapshot(id) { return animaDbRequest('readwrite', store => store.delete(String(id))); }
+
+function normalizeWorldEntries(book) {
+    const entries = book?.entries;
+    if (Array.isArray(entries)) return entries;
+    if (entries && typeof entries === 'object') return Object.values(entries);
+    return [];
+}
+
+function animaWorldbookStats(book) {
+    const entries = normalizeWorldEntries(book);
+    let chapters = 0;
+    let statuses = 0;
+    for (const entry of entries) {
+        const haystack = [entry?.comment, entry?.name, entry?.key, entry?.keys, entry?.content].flat().filter(Boolean).join(' ');
+        if (/\[?chapter[_ -]?\d+\]?/i.test(haystack)) chapters += 1;
+        if (/anima_status/i.test(haystack)) statuses += 1;
+    }
+    const json = JSON.stringify(book || {});
+    return { entries: entries.length, chapters, statuses, sizeBytes: new Blob([json]).size, likelyAnima: chapters > 0 || statuses > 0 };
+}
+
+function currentCharacterSummary() {
+    const ctx = context();
+    const character = Array.isArray(ctx.characters) && ctx.characterId != null ? ctx.characters[ctx.characterId] : null;
+    return { name: String(character?.name || '当前角色'), avatar: String(character?.avatar || '') };
+}
+
+async function readCurrentChatWorldbook() {
+    const ctx = context();
+    const chatId = String(ctx.getCurrentChatId?.() || ctx.chatId || '').trim();
+    if (!chatId) throw new Error('请先打开一个角色聊天，再保存 Anima 世界书');
+    const worldName = String(ctx.chatMetadata?.world_info || '').trim();
+    if (!worldName) throw new Error('当前聊天没有绑定聊天世界书。请先让 Anima 生成/绑定聊天世界书');
+    let data = null;
+    if (typeof ctx.loadWorldInfo === 'function') data = await ctx.loadWorldInfo(worldName);
+    if (!data) {
+        const response = await request('/api/worldinfo/get', { method: 'POST', headers: requestHeaders(), body: JSON.stringify({ name: worldName }) }, 120000);
+        data = await parseResponse(response);
+        if (!response.ok) throw new Error(`无法读取当前聊天世界书“${worldName}”`);
+    }
+    if (!data || typeof data !== 'object' || !data.entries) throw new Error(`聊天世界书“${worldName}”内容无效`);
+    return { chatId, worldName, data };
+}
+
+function animaSnapshotId(characterAvatar, chatId, worldName) {
+    return `${characterAvatar || 'unknown'}::${chatId || 'unknown'}::${worldName || 'world'}`;
+}
+
+async function saveCurrentAnimaWorldbook(button = null) {
+    const original = button?.innerHTML;
+    try {
+        if (button) { button.disabled = true; button.innerHTML = '<i class="fa-solid fa-spinner fa-spin"></i> 保存中'; }
+        const { chatId, worldName, data } = await readCurrentChatWorldbook();
+        const character = currentCharacterSummary();
+        const stats = animaWorldbookStats(data);
+        const id = animaSnapshotId(character.avatar, chatId, worldName);
+        const row = {
+            id, characterName: character.name, characterAvatar: character.avatar,
+            chatId, worldName, data: cloneJson(data), savedAt: new Date().toISOString(),
+            entryCount: stats.entries, chapterCount: stats.chapters, statusCount: stats.statuses,
+            sizeBytes: stats.sizeBytes, likelyAnima: stats.likelyAnima,
+        };
+        await putAnimaSnapshot(row);
+        notify(stats.likelyAnima ? 'success' : 'warning', stats.likelyAnima ? `已保存 Anima 世界书“${worldName}”` : `已保存聊天世界书“${worldName}”，但暂未检测到 chapter/anima_status 条目`);
+        if (document.querySelector('.cv-overlay') && currentLibraryMode === 'anima') await loadAnimaWorldbooks(currentLibraryQuery);
+        return row;
+    } finally {
+        if (button) { button.disabled = false; button.innerHTML = original; }
+    }
+}
+
+function animaSnapshotMatches(row, query) {
+    const q = String(query || '').trim().toLowerCase();
+    if (!q) return true;
+    return [row?.worldName, row?.characterName, row?.chatId, row?.savedAt].some(value => String(value || '').toLowerCase().includes(q));
+}
+
+function formatDateTime(value) {
+    const d = new Date(value);
+    return Number.isNaN(d.getTime()) ? String(value || '') : d.toLocaleString();
+}
+
+async function loadAnimaWorldbooks(query = '') {
+    const body = document.querySelector('#cv_library_body');
+    if (!body) return;
+    currentLibraryQuery = String(query || '');
+    libraryViewState.anima.query = currentLibraryQuery;
+    body.innerHTML = '<div class="cv-loading"><i class="fa-solid fa-spinner fa-spin"></i> 正在读取 Anima 世界书……</div>';
+    const rows = (await listAnimaSnapshots()).filter(row => animaSnapshotMatches(row, currentLibraryQuery));
+    visibleAnimaWorldbooks = rows;
+    const ctx = context();
+    const currentWorld = String(ctx.chatMetadata?.world_info || '').trim();
+    const currentChat = String(ctx.getCurrentChatId?.() || ctx.chatId || '').trim();
+    const wrapper = document.createElement('div');
+    wrapper.className = 'cv-anima-library';
+    wrapper.innerHTML = `
+      <section class="cv-anima-toolbar">
+        <div><b><i class="fa-solid fa-book-open-reader"></i> Anima 世界书保险箱</b><small>按“角色 + 聊天 + 聊天世界书”保存到 SillyTavern 当前站点的 IndexedDB；卸载/重装本插件不会主动删除。</small></div>
+        <button id="cv_anima_save_current" class="menu_button cv-primary" type="button"><i class="fa-solid fa-floppy-disk"></i><span>保存当前聊天世界书</span></button>
+      </section>
+      <div class="cv-anima-current"><span>当前聊天：<b>${escapeHtml(currentChat || '未打开聊天')}</b></span><span>聊天世界书：<b>${escapeHtml(currentWorld || '未绑定')}</b></span></div>`;
+    const saveButton = wrapper.querySelector('#cv_anima_save_current');
+    saveButton.addEventListener('click', event => saveCurrentAnimaWorldbook(event.currentTarget).catch(error => notify('error', error.message)));
+    if (!rows.length) {
+        const empty = document.createElement('div');
+        empty.className = 'cv-empty';
+        empty.innerHTML = '<i class="fa-solid fa-book-open"></i><b>还没有保存的 Anima 世界书</b><span>打开使用 Anima 的聊天，然后点击“保存当前聊天世界书”。</span>';
+        wrapper.append(empty);
+        body.replaceChildren(wrapper);
+        return;
+    }
+    const grid = document.createElement('div');
+    grid.className = 'cv-anima-grid';
+    for (const row of rows) {
+        const article = document.createElement('article');
+        article.className = 'cv-anima-card cv-card';
+        article.dataset.animaId = String(row.id);
+        article.tabIndex = 0;
+        article.innerHTML = `
+          <div class="cv-anima-card-icon"><i class="fa-solid fa-book-journal-whills"></i></div>
+          <div class="cv-anima-card-main"><div class="cv-anima-card-title"><b>${escapeHtml(row.worldName || '未命名世界书')}</b><span class="${row.likelyAnima ? 'is-anima' : ''}">${row.likelyAnima ? 'Anima' : '聊天世界书'}</span></div>
+          <small>${escapeHtml(row.characterName || '未知角色')} · ${escapeHtml(row.chatId || '未知聊天')}</small>
+          <div class="cv-anima-stats"><span>条目 ${Number(row.entryCount || 0)}</span><span>chapter ${Number(row.chapterCount || 0)}</span><span>${formatBytes(Number(row.sizeBytes || 0))}</span></div>
+          <time>${escapeHtml(formatDateTime(row.savedAt))}</time></div>
+          <i class="fa-solid fa-chevron-right cv-anima-chevron"></i>`;
+        const activate = () => {
+            const state = captureLibraryPosition(row.id);
+            showAnimaWorldbookDetail(row.id, state).catch(error => notify('error', error.message));
+        };
+        article.addEventListener('click', activate);
+        article.addEventListener('keydown', event => { if (event.key === 'Enter' || event.key === ' ') { event.preventDefault(); activate(); } });
+        grid.append(article);
+    }
+    wrapper.append(grid);
+    body.replaceChildren(wrapper);
+}
+
+async function restoreAnimaSnapshotToCurrentChat(row, button = null) {
+    const ctx = context();
+    const chatId = String(ctx.getCurrentChatId?.() || ctx.chatId || '').trim();
+    if (!chatId) throw new Error('请先打开要恢复到的目标聊天');
+    const original = button?.innerHTML;
+    try {
+        if (button) { button.disabled = true; button.innerHTML = '<i class="fa-solid fa-spinner fa-spin"></i> 恢复中'; }
+        const worldName = String(row.worldName || '').trim();
+        if (!worldName) throw new Error('备份中的世界书名称为空');
+        const existingNames = typeof ctx.getWorldInfoNames === 'function' ? ctx.getWorldInfoNames() : [];
+        if (Array.isArray(existingNames) && existingNames.includes(worldName)) {
+            const ok = globalThis.confirm(`酒馆已经存在同名世界书“${worldName}”。\n\n确定用 CardVault 中保存的 Anima 世界书覆盖它，并绑定到当前聊天吗？`);
+            if (!ok) return false;
+        }
+        if (typeof ctx.saveWorldInfo === 'function') await ctx.saveWorldInfo(worldName, cloneJson(row.data), true);
+        else {
+            const response = await request('/api/worldinfo/edit', { method: 'POST', headers: requestHeaders(), body: JSON.stringify({ name: worldName, data: row.data, immediately: true }) }, 120000);
+            if (!response.ok) throw new Error(`世界书写入失败（HTTP ${response.status}）`);
+        }
+        if (typeof ctx.updateWorldInfoList === 'function') await ctx.updateWorldInfoList();
+        if (!ctx.chatMetadata || typeof ctx.chatMetadata !== 'object') throw new Error('当前 SillyTavern 版本未暴露聊天元数据，无法绑定世界书');
+        ctx.chatMetadata.world_info = worldName;
+        if (typeof ctx.saveMetadata === 'function') await ctx.saveMetadata();
+        else if (typeof ctx.saveMetadataDebounced === 'function') ctx.saveMetadataDebounced();
+        notify('success', `已将“${worldName}”恢复并绑定到当前聊天`);
+        return true;
+    } finally {
+        if (button) { button.disabled = false; button.innerHTML = original; }
+    }
+}
+
+async function showAnimaWorldbookDetail(id, returnState = captureLibraryPosition(id)) {
+    const windowEl = document.querySelector('.cv-window');
+    if (!windowEl) return;
+    windowEl.innerHTML = '<div class="cv-loading full"><i class="fa-solid fa-spinner fa-spin"></i> 正在读取 Anima 世界书……</div>';
+    const row = await getAnimaSnapshot(id);
+    if (!row) throw new Error('这份 Anima 世界书备份不存在或已被删除');
+    const entries = normalizeWorldEntries(row.data);
+    windowEl.innerHTML = `
+      <header class="cv-header cv-detail-toolbar">
+        <button id="cv_detail_back" class="menu_button cv-back-button" type="button"><i class="fa-solid fa-arrow-left"></i><span>返回 Anima世界书</span></button>
+        <div class="cv-detail-toolbar-title"><b>${escapeHtml(row.worldName || 'Anima 世界书')}</b><small>${escapeHtml(row.characterName || '')} · ${escapeHtml(row.chatId || '')}</small></div>
+        <button id="cv_library_close" class="menu_button cv-close" type="button"><i class="fa-solid fa-xmark"></i></button>
+      </header>
+      <main class="cv-detail-scroll cv-detail-v2">
+        <section class="cv-anima-detail-hero">
+          <div class="cv-anima-detail-icon"><i class="fa-solid fa-book-journal-whills"></i></div>
+          <div class="cv-detail-summary"><div class="cv-detail-eyebrow"><span><i class="fa-solid fa-memory"></i> ${row.likelyAnima ? '检测到 Anima 条目' : '聊天世界书备份'}</span><span>${escapeHtml(formatDateTime(row.savedAt))}</span></div>
+          <h2>${escapeHtml(row.worldName || '未命名世界书')}</h2>
+          <div class="cv-meta-grid"><div><small>世界书条目</small><b>${entries.length}</b></div><div><small>chapter 条目</small><b>${Number(row.chapterCount || 0)}</b></div><div><small>anima_status</small><b>${Number(row.statusCount || 0)}</b></div><div><small>备份大小</small><b>${formatBytes(Number(row.sizeBytes || 0))}</b></div></div>
+          <div class="cv-actions"><button id="cv_anima_restore" class="menu_button cv-primary" type="button"><i class="fa-solid fa-arrow-rotate-left"></i><span>恢复到当前聊天</span></button><button id="cv_anima_download" class="menu_button" type="button"><i class="fa-solid fa-download"></i><span>导出 JSON</span></button><button id="cv_anima_delete" class="menu_button cv-danger" type="button"><i class="fa-solid fa-trash-can"></i><span>删除备份</span></button></div>
+          <p class="cv-detail-hint"><i class="fa-solid fa-circle-info"></i> 恢复会写回 SillyTavern 世界书，并把它设置为“当前聊天”的 Chat Lorebook，不会改角色卡的角色世界书绑定。</p></div>
+        </section>
+        <section class="cv-pane"><div class="cv-section-heading"><div><h3>世界书条目</h3><small>最多预览前 80 条；导出 JSON 会保留全部内容</small></div></div>
+        ${entries.slice(0,80).map((entry,index)=>`<details class="cv-entry"><summary><span>${escapeHtml(entry?.comment || entry?.name || `条目 ${index+1}`)}</span><small>${entry?.disable === true || entry?.enabled === false ? '已禁用' : '已启用'}</small></summary><pre>${escapeHtml(String(entry?.content || ''))}</pre></details>`).join('') || '<div class="cv-empty compact"><b>世界书中没有条目</b></div>'}
+        </section>
+      </main>`;
+    windowEl.querySelector('#cv_library_close').addEventListener('click', closeOverlay);
+    windowEl.querySelector('#cv_detail_back').addEventListener('click', () => returnToLibrary('anima', returnState).catch(error => notify('error', error.message)));
+    windowEl.querySelector('#cv_anima_restore').addEventListener('click', event => restoreAnimaSnapshotToCurrentChat(row, event.currentTarget).catch(error => notify('error', error.message)));
+    windowEl.querySelector('#cv_anima_download').addEventListener('click', () => downloadJson(row.data, `${safeFilename(row.worldName || 'anima-worldbook')}__Anima世界书.json`));
+    windowEl.querySelector('#cv_anima_delete').addEventListener('click', async () => {
+        if (!globalThis.confirm(`确定删除“${row.worldName}”的这份 Anima 世界书备份吗？\n\n只删除 CardVault 的本地备份，不会删除酒馆中的世界书。`)) return;
+        await deleteAnimaSnapshot(row.id);
+        notify('success', 'Anima 世界书备份已删除');
+        await returnToLibrary('anima', returnState);
+    });
 }
 
 async function loadPlayArchives(query = '') {
@@ -4546,7 +4860,7 @@ function installFloatingBall() {
           <i class="fa-solid fa-boxes-packing"></i><span><b>完整归档并清理</b><small>归档角色、聊天、世界书后确认清理</small></span>
         </button>
       </div>
-      <button type="button" class="cv-floating-ball" aria-label="CardVault 快捷操作" title="CardVault · 拖动悬浮球 / 点击展开">
+      <button type="button" class="cv-floating-ball" aria-label="CardVault 快捷操作" title="CardVault · 拖动后自动吸边 / 点击展开">
         <i class="fa-solid fa-box-archive"></i>
         <span class="cv-floating-online" aria-hidden="true"></span>
       </button>`;
@@ -4556,6 +4870,7 @@ function installFloatingBall() {
     const menu = root.querySelector('.cv-floating-menu');
     const actions = [...root.querySelectorAll('.cv-floating-action')];
     const size = 58;
+    const edgeInset = 6;
     let x = Math.max(8, window.innerWidth - size - 18);
     let y = Math.max(8, window.innerHeight - size - 110);
     let dragging = false;
@@ -4576,7 +4891,7 @@ function installFloatingBall() {
     } catch (_) {}
 
     const clampPosition = () => {
-        x = Math.min(Math.max(8, x), Math.max(8, window.innerWidth - size - 8));
+        x = Math.min(Math.max(edgeInset, x), Math.max(edgeInset, window.innerWidth - size - edgeInset));
         y = Math.min(Math.max(8, y), Math.max(8, window.innerHeight - size - 8));
     };
 
@@ -4598,6 +4913,16 @@ function installFloatingBall() {
         try { localStorage.setItem(CARDVAULT_FLOAT_POSITION_KEY, JSON.stringify({ x: Math.round(x), y: Math.round(y) })); } catch (_) {}
     };
 
+    const snapToNearestEdge = ({ save = true } = {}) => {
+        clampPosition();
+        const leftX = edgeInset;
+        const rightX = Math.max(edgeInset, window.innerWidth - size - edgeInset);
+        const centerX = x + size / 2;
+        x = centerX <= window.innerWidth / 2 ? leftX : rightX;
+        place();
+        if (save) savePosition();
+    };
+
     const setMenuOpen = open => {
         const next = !!open && !busy;
         root.classList.toggle('is-open', next);
@@ -4609,7 +4934,7 @@ function installFloatingBall() {
         root.classList.toggle('is-busy', busy);
         ball.disabled = busy;
         if (label) ball.title = label;
-        else ball.title = 'CardVault · 拖动悬浮球 / 点击展开';
+        else ball.title = 'CardVault · 拖动后自动吸边 / 点击展开';
         actions.forEach(button => { button.disabled = busy; });
         if (busy) setMenuOpen(false);
     };
@@ -4674,9 +4999,10 @@ function installFloatingBall() {
         if (activePointerId === null || event.pointerId !== activePointerId) return;
         try { ball.releasePointerCapture(activePointerId); } catch (_) {}
         activePointerId = null;
-        if (dragging) savePosition();
+        const wasDragging = dragging;
         dragging = false;
         root.classList.remove('is-dragging');
+        if (wasDragging) snapToNearestEdge();
         if (moved) setTimeout(() => { moved = false; }, 0);
     };
     const onBallClick = event => {
@@ -4688,7 +5014,7 @@ function installFloatingBall() {
     const onOutsidePointerDown = event => {
         if (!root.contains(event.target)) setMenuOpen(false);
     };
-    const onResize = () => { place(); savePosition(); };
+    const onResize = () => { snapToNearestEdge(); };
 
     ball.addEventListener('pointerdown', onBallPointerDown);
     ball.addEventListener('pointermove', onBallPointerMove);
@@ -4704,7 +5030,8 @@ function installFloatingBall() {
     }));
     document.addEventListener('pointerdown', onOutsidePointerDown, true);
     window.addEventListener('resize', onResize);
-    place();
+    // 旧版本保存过任意横向位置时，启动后也会自动贴到最近的左右边缘。
+    snapToNearestEdge({ save: true });
 
     floatingBallCleanup = () => {
         document.removeEventListener('pointerdown', onOutsidePointerDown, true);
@@ -5029,7 +5356,7 @@ async function initialize() {
             void refreshCardListFromServer().catch(error => console.warn('[CardVault] background card-list warmup skipped', error));
             void runImportGuardianSweep({ force: true });
         }
-        console.info(`[CardVault] Standalone 1.1.0 loaded: ST ${sillyTavernUserHandle} -> ${accountDisplayName(requiredCardVaultAccount())}; transport=${cardVaultTransportMode}`);
+        console.info(`[CardVault] Full Anima 1.2.1 loaded: ST ${sillyTavernUserHandle} -> ${accountDisplayName(requiredCardVaultAccount())}; transport=${cardVaultTransportMode}`);
     } catch (error) {
         initialized = false;
         console.error('[CardVault] Initialization failed', error);
@@ -5046,7 +5373,7 @@ document.addEventListener('keydown', handleEscape);
 
 // Optional compatibility bridge: standalone CardVault can still be opened by an existing VVV shell if present.
 globalThis.VVVUnifiedCardVault = Object.assign(globalThis.VVVUnifiedCardVault || {}, {
-    version: '1.1.0-standalone',
+    version: '1.2.1-full-anima',
     open: async () => { if (!initialized) await initialize(); return openLibrary(); },
     close: () => closeOverlay(),
     verify: (opts={quiet:true}) => verify(opts),
@@ -5067,9 +5394,16 @@ export function onDisable() {
 
 export async function onClean() {
     setSessionToken('');
+    // 用户要求：卸载 / 重装 CardVault 后，已经产生的 AI 分类仍然保留。
+    // 分类会同步到 SillyTavern 站点 localStorage；Anima 世界书保存在 IndexedDB，二者都不在卸载时清理。
     try {
         const root = context().extensionSettings || globalThis.extension_settings;
-        if (root) delete root[EXTENSION_NAME];
+        const current = root?.[EXTENSION_NAME];
+        if (current?.aiClassifications) persistAiClassifications(current.aiClassifications);
+        if (root) {
+            const preserved = { aiClassifications: { ...loadPersistentAiClassifications() } };
+            root[EXTENSION_NAME] = preserved;
+        }
         saveSettings();
     } catch { /* no-op */ }
 }
