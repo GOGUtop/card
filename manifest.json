@@ -1,9 +1,9 @@
 {
   "manifest_version": 1,
   "id": "cardvault_sillytavern_extension",
-  "display_name": "CardVault · Full · Anima世界书",
-  "version": "1.2.3",
-  "description": "CardVault 完整版：角色卡库、游玩备份、Anima 聊天世界书；AI 分类会作为隐藏内部数据卡同步到 CardVault 云端，卸载/换浏览器后仍可读取，并可被只读导入版共享；悬浮球松手后半隐藏吸附左右边缘。",
+  "display_name": "CardVault · Full",
+  "version": "1.2.5",
+  "description": "CardVault 完整版：角色卡库与游玩备份；AI 分类会作为隐藏内部数据卡同步到 CardVault 云端，卸载/换浏览器后仍可读取，并可被只读导入版共享；悬浮球松手后半隐藏吸附左右边缘；角色卡详情返回时原位恢复，不重新渲染卡库导致跳动。",
   "author": "小狗主理人 × vvv",
   "loading_order": 25,
   "requires": [],
