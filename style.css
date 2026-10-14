@@ -2242,3 +2242,30 @@ body.cv-no-scroll{
 /* Selection control sits outside the cover, so keep the author line readable. */
 .cv-card .cv-select-toggle{left:auto!important;right:8px!important;top:8px!important;}
 .cv-selection-mode .cv-card-heading{padding-right:45px;}
+
+
+/* =========================================================
+   CardVault 0.4.28 — 首页卡片图片缩小版
+   仅压缩卡库首页封面高度，保留详情页封面与全部功能。
+   ========================================================= */
+@media (min-width: 980px) {
+  .cv-overlay:not(.cv-mobile-fullscreen) .cv-cover-wrap {
+    aspect-ratio: 5 / 4 !important;
+    max-height: 360px;
+  }
+  .cv-overlay:not(.cv-mobile-fullscreen) .cv-card-info {
+    padding: 10px 11px !important;
+    gap: 5px !important;
+  }
+}
+@media (min-width: 761px) and (max-width: 979px) {
+  .cv-overlay:not(.cv-mobile-fullscreen) .cv-cover-wrap {
+    aspect-ratio: 4 / 5 !important;
+    max-height: 320px;
+  }
+}
+@media (max-width: 760px) {
+  .cv-overlay.cv-mobile-fullscreen .cv-cover-wrap {
+    aspect-ratio: 1 / 1 !important;
+  }
+}
