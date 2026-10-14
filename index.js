@@ -2364,15 +2364,35 @@ function buildAiFilterBar(cards) {
     const classified = cards.filter(card => getCardClassification(card));
     const bar = document.createElement('div');
     bar.className = 'cv-ai-filter-bar';
+    // 画廊风格：常用分类横向快捷入口；原多选面板完整保留。
+    // 快捷入口只操作既有 setSelectedAiFilters，不改动分类存储或筛选规则。
+    const filterChips = ['全部', ...currentCategoryTags(), '未分类'];
     bar.innerHTML = `
-      <button id="cv_ai_filter_open" class="menu_button cv-ai-filter-open ${selected.length ? 'active' : ''}" type="button">
-        <i class="fa-solid fa-tags"></i><span>选择标签</span><b>${selected.length}</b>
+      <button id="cv_ai_filter_open" class="menu_button cv-ai-filter-open ${selected.length ? 'active' : ''}" type="button" title="打开完整多选分类面板">
+        <i class="fa-solid fa-sliders"></i><span>筛选</span><b>${selected.length}</b>
       </button>
+      <div class="cv-gallery-filter-strip" aria-label="角色卡快捷分类">
+        ${filterChips.map(tag => `<button type="button" class="cv-gallery-filter-chip ${tag === '全部' ? (!selected.length ? 'active' : '') : (selected.includes(tag) ? 'active' : '')}" data-cv-quick-filter="${escapeHtml(tag)}" aria-pressed="${tag === '全部' ? String(!selected.length) : String(selected.includes(tag))}">${escapeHtml(tag === '全部' ? '全部' : (tag === '未分类' ? tag : aiTagLabel(tag)))}</button>`).join('')}
+      </div>
       <div class="cv-ai-api-badge" title="AI 分类只走 CardVault 独立 API，不读取或占用聊天主 API">
         <i class="fa-solid fa-plug-circle-check"></i><span>独立 API</span><small>${escapeHtml(classifierConfig().classifierModel || '未选模型')}</small>
       </div>
       <div class="cv-ai-filter-current">${selected.length ? selected.slice(0, 4).map(tag => `<span>${escapeHtml(tag === '未分类' ? tag : aiTagLabel(tag))}</span>`).join('') + (selected.length > 4 ? `<span>+${selected.length - 4}</span>` : '') : `<small data-cv-ai-status>${classified.length}/${cards.length} 已分类 · ${escapeHtml(aiGenerationModeLabel())}</small>`}</div>`;
     bar.querySelector('#cv_ai_filter_open').addEventListener('click', () => openAiFilterPicker(cards));
+    bar.querySelectorAll('[data-cv-quick-filter]').forEach(button => button.addEventListener('click', () => {
+        const tag = button.dataset.cvQuickFilter || '全部';
+        const next = tag === '全部' ? [] : (selectedAiFilters().length === 1 && selectedAiFilters()[0] === tag ? [] : [tag]);
+        const oldScrollLeft = bar.querySelector('.cv-gallery-filter-strip')?.scrollLeft || 0;
+        setSelectedAiFilters(next);
+        clearSelection();
+        renderLoadedCards();
+        const body = document.querySelector('#cv_library_body');
+        if (body) {
+            const nextStrip = body.querySelector('.cv-gallery-filter-strip');
+            if (nextStrip) nextStrip.scrollLeft = oldScrollLeft;
+            body.scrollTop = 0;
+        }
+    }));
     return bar;
 }
 
@@ -3097,8 +3117,12 @@ function createCardArticle(card) {
     article.setAttribute('aria-selected', String(selectedCardIds.has(id)));
     article.innerHTML = `
       <button class="cv-select-toggle" type="button" aria-label="选择 ${escapeHtml(card.name || '角色卡')}" title="选择"><i class="fa-regular fa-circle"></i></button>
+      <div class="cv-card-heading">
+        <div class="cv-card-byline"><span class="cv-card-avatar" aria-hidden="true"><i class="fa-solid fa-user"></i></span><small title="${escapeHtml(card.creator || '未知作者')}">${escapeHtml(card.creator || '未知作者')}</small><span class="cv-card-type">角色卡</span></div>
+        <b class="cv-card-title" title="${escapeHtml(card.name)}">${escapeHtml(card.name || '未命名角色')}</b>
+      </div>
       <div class="cv-cover-wrap"><img alt="${escapeHtml(card.name)}" loading="lazy" decoding="async" data-cv-cover-id="${escapeHtml(id)}"><span class="cv-card-format">${escapeHtml(String(card.ext || card.format || '').replace('.', '').toUpperCase())}</span>${aiTagBadgesHtml(card)}</div>
-      <div class="cv-card-info"><b title="${escapeHtml(card.name)}">${escapeHtml(card.name || '未命名角色')}</b><small>${escapeHtml(card.creator || '未知作者')}</small><span>${escapeHtml(card.spec || '')}</span></div>`;
+      <div class="cv-card-info"><span class="cv-card-spec" title="${escapeHtml(card.spec || '')}"><i class="fa-regular fa-file-lines"></i> ${escapeHtml(card.spec || '角色卡')}</span><span class="cv-card-open-hint"><i class="fa-regular fa-comment-dots"></i> 查看简介 <i class="fa-solid fa-chevron-right"></i></span></div>`;
     const activate = () => {
         if (selectionMode) return toggleCardSelection(id);
         const state = captureLibraryPosition(id);
@@ -3485,6 +3509,11 @@ async function showDetail(id, returnState = captureLibraryPosition(id)) {
               <div><small>卡片规格</small><b>${escapeHtml(card.specVersion || '—')}</b></div>
               <div><small>文件大小</small><b>${formatBytes(card.size)}</b></div>
               <div><small>云端版本</small><b>${escapeHtml(card.currentVersion || 1)}</b></div>
+            </div>
+            <div class="cv-description-preview">
+              <b><i class="fa-regular fa-comment-dots"></i> 角色卡简介</b>
+              <p>${escapeHtml(cleanClassifierSnippet(valueFromCard(card)?.description || '', 250) || '这张角色卡暂未填写简介。')}</p>
+              <small>完整角色描述、性格及开场内容请在下方「概览」查看</small>
             </div>
             <div class="cv-actions">
               <button id="cv_import_st" class="menu_button cv-primary" type="button"><i class="fa-solid fa-file-import"></i><span>自动导入酒馆</span></button>
