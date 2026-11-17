@@ -1127,7 +1127,7 @@ function installInteractiveCardFallbacks() {
     }
 
     globalThis.cardVaultSeikanFallback = {
-        version: '1.3.1-full',
+        version: '1.3.2-full',
         rescan: () => rescanSeikanInteractiveRoots(document, { deepShadowScan: true }),
         send: role => sendSeikanRoleChoice(role),
         testOwner: () => sendSeikanRoleChoice('owner'),
@@ -3893,8 +3893,12 @@ async function loadPlayArchives(query = '') {
         article.setAttribute('aria-selected', String(selectedCardIds.has(id)));
         article.innerHTML = `
           <button class="cv-select-toggle" type="button" aria-label="选择 ${escapeHtml(archive.name || '游玩备份')}" title="选择"><i class="fa-regular fa-circle"></i></button>
-          <div class="cv-cover-wrap"><img alt="${escapeHtml(archive.name)}" loading="lazy"><span class="cv-card-format"><i class="fa-solid fa-comments"></i> ${Number(archive.chatCount || 0)}</span></div>
-          <div class="cv-card-info"><b title="${escapeHtml(archive.name)}">${escapeHtml(archive.name || '未命名角色')}</b><small>${archive.state === 'active' ? '正在酒馆中游玩' : '已归档到云端'}</small><span>世界书 ${Number(archive.worldbookCount || 0)} · 正则 ${Number(archive.regexCount || 0)} · ${formatBytes(archive.totalSize)}</span></div>`;
+          <div class="cv-card-heading">
+            <div class="cv-card-byline"><span class="cv-card-avatar" aria-hidden="true"><i class="fa-solid fa-gamepad"></i></span><small>游玩备份</small><span class="cv-card-type">${archive.state === 'active' ? '正在游玩' : '已归档'}</span></div>
+            <b class="cv-card-title" title="${escapeHtml(archive.name)}">${escapeHtml(archive.name || '未命名角色')}</b>
+          </div>
+          <div class="cv-cover-wrap"><img alt="${escapeHtml(archive.name)}" loading="lazy" decoding="async"><span class="cv-card-format"><i class="fa-solid fa-comments"></i> ${Number(archive.chatCount || 0)}</span></div>
+          <div class="cv-card-info"><span class="cv-card-spec" title="世界书 ${Number(archive.worldbookCount || 0)} · 正则 ${Number(archive.regexCount || 0)} · ${formatBytes(archive.totalSize)}"><i class="fa-regular fa-file-lines"></i> 世界书 ${Number(archive.worldbookCount || 0)} · 正则 ${Number(archive.regexCount || 0)} · ${formatBytes(archive.totalSize)}</span><span class="cv-card-open-hint"><i class="fa-regular fa-comment-dots"></i> 查看详情 <i class="fa-solid fa-chevron-right"></i></span></div>`;
         const activate = () => {
             if (selectionMode) return toggleCardSelection(id);
             const state = captureLibraryPosition(id);
@@ -5980,7 +5984,7 @@ async function initialize() {
             void refreshCardListFromServer().catch(error => console.warn('[CardVault] background card-list warmup skipped', error));
             void runImportGuardianSweep({ force: true });
         }
-        console.info(`[CardVault] Full 1.3.1 loaded: ST ${sillyTavernUserHandle} -> ${accountDisplayName(requiredCardVaultAccount())}; transport=${cardVaultTransportMode}`);
+        console.info(`[CardVault] Full 1.3.2 loaded: ST ${sillyTavernUserHandle} -> ${accountDisplayName(requiredCardVaultAccount())}; transport=${cardVaultTransportMode}`);
     } catch (error) {
         initialized = false;
         console.error('[CardVault] Initialization failed', error);
@@ -6000,7 +6004,7 @@ document.addEventListener('keydown', handleEscape);
 
 // Optional compatibility bridge: standalone CardVault can still be opened by an existing VVV shell if present.
 globalThis.VVVUnifiedCardVault = Object.assign(globalThis.VVVUnifiedCardVault || {}, {
-    version: '1.3.1-full',
+    version: '1.3.2-full',
     open: async () => { if (!initialized) await initialize(); return openLibrary(); },
     close: () => closeOverlay(),
     verify: (opts={quiet:true}) => verify(opts),

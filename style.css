@@ -1987,11 +1987,11 @@ body.cv-no-scroll{
   opacity:.9!important;font-size:10px!important;
 }
 .cv-card-open-hint .fa-chevron-right{font-size:8px;margin-left:1px;}
-/* 游玩备份保留原卡片信息结构，不受角色卡标题上移的影响。 */
-.cv-play-card .cv-card-info{display:flex!important;flex-direction:column!important;align-items:flex-start!important;gap:4px!important;}
-.cv-play-card .cv-card-info b{font-size:13px!important;color:#f3f3f7!important;}
-.cv-play-card .cv-card-info small{font-size:11px!important;color:#b6b8c3!important;}
-.cv-play-card .cv-card-info span{font-size:10px!important;color:#9d9eab!important;}
+/* 游玩备份与角色卡库使用相同的「标题 / 封面 / 简要信息」紧凑卡片结构。 */
+.cv-play-card .cv-card-info{display:flex!important;flex-direction:row!important;justify-content:space-between!important;align-items:center!important;gap:7px!important;}
+.cv-play-card .cv-card-info .cv-card-spec{min-width:0;flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-size:10px!important;color:#b4b4c0!important;opacity:1!important;}
+.cv-play-card .cv-card-info .cv-card-open-hint{flex:none;color:#c3c2f6!important;opacity:.9!important;font-size:10px!important;}
+.cv-play-card .cv-card-byline .cv-card-type{color:#a6a9e2!important;}
 .cv-card.selected,
 .cv-overlay.cv-mobile-fullscreen .cv-card.selected{
   border-color:#9e9ffd!important;
@@ -2295,44 +2295,44 @@ body.cv-no-scroll{
 
 
 /* =========================================================
-   CardVault 1.2.7 — 桌面紧凑角色卡库（封面约 1/4 面积）
-   1450px 宽窗口约 6 列；缩小的是卡片占位，不改变原图片文件。
-   仅作用于“角色卡库”列表：游玩备份、详情大图、手机布局不变。
+   CardVault 1.3.2 — 桌面角色卡库 / 游玩备份共用紧凑卡片（约 1/4 面积）
+   宽窗口自动排约 6 列；只缩小列表中的卡片，不改变原图片文件。
+   详情大图、手机布局不变。
    ========================================================= */
 @media (min-width: 761px) {
   /* 随卡库可用宽度自动列数：宽桌面 6 列，中等窗口逐级变成 5/4/3 列。 */
-  .cv-overlay:not(.cv-mobile-fullscreen) .cv-grid:not(.cv-play-grid) {
+  .cv-overlay:not(.cv-mobile-fullscreen) .cv-grid {
     grid-template-columns: repeat(auto-fill, minmax(min(100%, 205px), 1fr)) !important;
     gap: 9px !important;
   }
 
   /* 封面宽、高均随卡片约减半，保持填充裁切方式；角色详情不受影响。 */
-  .cv-overlay:not(.cv-mobile-fullscreen) .cv-grid:not(.cv-play-grid) .cv-card .cv-cover-wrap {
+  .cv-overlay:not(.cv-mobile-fullscreen) .cv-grid .cv-card .cv-cover-wrap {
     width: 100%;
     aspect-ratio: 5 / 4 !important;
     max-height: none !important;
   }
 
   /* 紧凑尺寸下仍保留作者、标题、格式及“查看简介”入口。 */
-  .cv-overlay:not(.cv-mobile-fullscreen) .cv-grid:not(.cv-play-grid) .cv-card-heading {
+  .cv-overlay:not(.cv-mobile-fullscreen) .cv-grid .cv-card-heading {
     padding: 8px 9px 7px;
     gap: 4px;
   }
-  .cv-overlay:not(.cv-mobile-fullscreen) .cv-grid:not(.cv-play-grid) .cv-card-title {
+  .cv-overlay:not(.cv-mobile-fullscreen) .cv-grid .cv-card-title {
     font-size: 12px;
   }
-  .cv-overlay:not(.cv-mobile-fullscreen) .cv-grid:not(.cv-play-grid) .cv-card-info {
+  .cv-overlay:not(.cv-mobile-fullscreen) .cv-grid .cv-card-info {
     min-height: 33px;
     padding: 7px 9px !important;
     gap: 5px !important;
   }
-  .cv-overlay:not(.cv-mobile-fullscreen) .cv-grid:not(.cv-play-grid) .cv-card .cv-ai-card-tags-overlay span {
+  .cv-overlay:not(.cv-mobile-fullscreen) .cv-grid .cv-card .cv-ai-card-tags-overlay span {
     font-size: 9px !important;
     padding: 3px 5px !important;
   }
 
   /* 配合原本的按需渲染，避免列表滚动时继续使用旧大卡预估高度。 */
-  .cv-overlay:not(.cv-mobile-fullscreen) .cv-grid:not(.cv-play-grid) .cv-card {
+  .cv-overlay:not(.cv-mobile-fullscreen) .cv-grid .cv-card {
     contain-intrinsic-size: auto 280px;
   }
 }
