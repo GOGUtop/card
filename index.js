@@ -1498,6 +1498,9 @@ function attachMobileViewport(overlay) {
         overlay.style.setProperty('--cv-mobile-height', `${height}px`);
         overlay.style.setProperty('--cv-mobile-left', `${left}px`);
         overlay.style.setProperty('--cv-mobile-top', `${top}px`);
+        // The visual viewport can become much shorter than the layout viewport
+        // when the mobile keyboard opens; keep nested dialogs usable then too.
+        overlay.classList.toggle('cv-mobile-compact', height < 560);
     };
 
     const viewport = globalThis.visualViewport;
