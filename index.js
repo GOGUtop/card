@@ -1127,7 +1127,7 @@ function installInteractiveCardFallbacks() {
     }
 
     globalThis.cardVaultSeikanFallback = {
-        version: '1.3.0-full',
+        version: '1.3.1-full',
         rescan: () => rescanSeikanInteractiveRoots(document, { deepShadowScan: true }),
         send: role => sendSeikanRoleChoice(role),
         testOwner: () => sendSeikanRoleChoice('owner'),
@@ -2133,6 +2133,83 @@ let cvDedupeScan = null;
 let cvDedupeFailures = [];
 let cvDedupeNetworkCount = 0;
 let cvDedupeCachedCount = 0;
+let cvDedupeCoverObserver = null;
+let cvDedupeZoomReturnFocus = null;
+
+function cvDedupeStopCoverObserver() {
+    cvDedupeCoverObserver?.disconnect();
+    cvDedupeCoverObserver = null;
+}
+
+function cvDedupeObserveCovers(root = document.querySelector('#cv_dedupe_results')) {
+    if (!root?.isConnected) return;
+    const images = [...root.querySelectorAll('img[data-cv-dedupe-cover-id]')]
+        .filter(img => img.dataset.cvDedupeObserved !== '1');
+    if (!images.length) return;
+    const begin = img => {
+        if (!img.isConnected || img.dataset.cvDedupeStarted === '1') return;
+        img.dataset.cvDedupeStarted = '1';
+        // Reuse CardVault's authenticated cover endpoint, object-URL cache and bounded queue.
+        enqueueCoverLoad(img, img.dataset.cvDedupeCoverId, overlayAbortController?.signal);
+    };
+    if (typeof IntersectionObserver !== 'function') {
+        images.forEach(begin);
+        return;
+    }
+    if (!cvDedupeCoverObserver) {
+        cvDedupeCoverObserver = new IntersectionObserver(entries => {
+            for (const entry of entries) {
+                if (!entry.isIntersecting) continue;
+                cvDedupeCoverObserver?.unobserve(entry.target);
+                begin(entry.target);
+            }
+        }, { root, rootMargin: '240px 0px', threshold: 0.01 });
+    }
+    for (const img of images) {
+        img.dataset.cvDedupeObserved = '1';
+        cvDedupeCoverObserver.observe(img);
+    }
+}
+
+function cvDedupeCloseZoom() {
+    document.querySelector('.cv-dedupe-zoom')?.remove();
+    if (cvDedupeZoomReturnFocus?.isConnected) cvDedupeZoomReturnFocus.focus({ preventScroll: true });
+    cvDedupeZoomReturnFocus = null;
+}
+
+function cvDedupeOpenZoom(button) {
+    const layer = document.querySelector('.cv-dedupe-layer');
+    if (!layer || !button) return;
+    cvDedupeCloseZoom();
+    cvDedupeZoomReturnFocus = button;
+    const id = button.dataset.cvDedupeZoom;
+    const name = button.dataset.cvDedupeName || '角色卡封面';
+    const zoom = document.createElement('div');
+    zoom.className = 'cv-dedupe-zoom';
+    zoom.setAttribute('role', 'dialog');
+    zoom.setAttribute('aria-modal', 'true');
+    zoom.setAttribute('aria-label', `${name} · 封面预览`);
+    // Never put untrusted card titles into HTML without escaping.
+    zoom.innerHTML = `<div class="cv-dedupe-zoom-panel"><div class="cv-dedupe-zoom-header"><b>${escapeHtml(name)}</b><button type="button" class="menu_button cv-dedupe-zoom-close" aria-label="关闭图片预览"><i class="fa-solid fa-xmark"></i></button></div><div class="cv-dedupe-zoom-body"><img alt="${escapeHtml(name)}" decoding="async"><span class="cv-dedupe-zoom-loading">正在加载角色卡封面…</span></div></div>`;
+    layer.append(zoom);
+    zoom.addEventListener('mousedown', event => { if (event.target === zoom) cvDedupeCloseZoom(); });
+    zoom.querySelector('.cv-dedupe-zoom-close').addEventListener('click', cvDedupeCloseZoom);
+    zoom.querySelector('.cv-dedupe-zoom-close').focus({ preventScroll: true });
+    const img = zoom.querySelector('img');
+    const original = button.querySelector('img');
+    const cached = coverUrlByCardId.get(String(id));
+    if (cached || (original?.classList.contains('loaded') && original.src)) {
+        img.src = cached || original.src;
+        img.classList.add('loaded');
+    } else {
+        void loadCover(img, id, overlayAbortController?.signal).finally(() => {
+            if (img.isConnected && !img.classList.contains('loaded')) {
+                zoom.querySelector('.cv-dedupe-zoom-loading').textContent = '封面暂时无法加载';
+            }
+        });
+    }
+}
+
 
 function cvDedupeNormalize(value, limit = 54000) {
     const normalized = String(value ?? '').normalize('NFKC').toLowerCase()
@@ -2366,6 +2443,8 @@ function cvDedupeSetProgress(message, progress = null) {
 
 function cvDedupeClose() {
     cvDedupeScan?.controller?.abort();
+    cvDedupeStopCoverObserver();
+    cvDedupeCloseZoom();
     document.querySelector('.cv-dedupe-layer')?.remove();
 }
 
@@ -2404,6 +2483,8 @@ function cvDedupeOpen() {
     layer.querySelector('#cv_dedupe_force').addEventListener('click', () => cvDedupeRun(true).catch(error => notify('error', `内容查重失败：${error.message}`)));
     layer.querySelector('#cv_dedupe_threshold').addEventListener('change', () => { if (cvDedupeEntries) void cvDedupeRenderResults(); });
     layer.querySelector('#cv_dedupe_results').addEventListener('click', event => {
+        const zoomButton = event.target.closest('[data-cv-dedupe-zoom]');
+        if (zoomButton) { cvDedupeOpenZoom(zoomButton); return; }
         const compareButton = event.target.closest('[data-cv-dedupe-compare]');
         if (compareButton) { void cvDedupeShowDiff(compareButton); return; }
         const button = event.target.closest('[data-cv-dedupe-open]');
@@ -2423,9 +2504,16 @@ function cvDedupeRenderGroup(group, index) {
     const kindLabel = { exact: '内容完全相同', update: '疑似更新版本', similar: '内容高度相似' }[group.best.kind];
     const cards = group.cards.map(card => `
         <div class="cv-dedupe-card-row">
+          <button type="button" class="cv-dedupe-cover-button" data-cv-dedupe-zoom="${escapeHtml(String(card.id))}" data-cv-dedupe-name="${escapeHtml(card.name || '未命名角色')}" title="点击放大查看：${escapeHtml(card.name || '未命名角色')}" aria-label="放大查看 ${escapeHtml(card.name || '未命名角色')} 的封面">
+            <img alt="${escapeHtml(card.name || '未命名角色')} 的角色卡封面" loading="lazy" decoding="async" data-cv-dedupe-cover-id="${escapeHtml(String(card.id))}">
+            <span class="cv-dedupe-cover-placeholder" aria-hidden="true"><i class="fa-solid fa-image"></i></span>
+            <span class="cv-dedupe-cover-magnify" aria-hidden="true"><i class="fa-solid fa-magnifying-glass-plus"></i></span>
+          </button>
           <div class="cv-dedupe-card-info"><b title="${escapeHtml(card.name || '')}">${escapeHtml(card.name || '未命名角色')}</b>
-            <small>${escapeHtml(card.creator || '未知作者')} · 云端版本 ${escapeHtml(card.currentVersion || 1)} · 上传更新 ${escapeHtml(formatDate(card.updatedAt))}</small></div>
-          <button type="button" class="menu_button cv-dedupe-view" data-cv-dedupe-open="${escapeHtml(String(card.id))}">查看卡片 <i class="fa-solid fa-arrow-up-right-from-square"></i></button>
+            <small>${escapeHtml(card.creator || '未知作者')}</small>
+            <small>云端版本 ${escapeHtml(card.currentVersion || 1)} · ${escapeHtml(formatDate(card.updatedAt))}</small>
+            <button type="button" class="menu_button cv-dedupe-view" data-cv-dedupe-open="${escapeHtml(String(card.id))}">查看详情 <i class="fa-solid fa-arrow-up-right-from-square"></i></button>
+          </div>
         </div>`).join('');
     const matches = group.links.slice(0, 6).map(pair => {
         const a = group.cards.find(card => String(card.id) === pair.leftId);
@@ -2519,6 +2607,7 @@ async function cvDedupeRenderResults() {
         }
     }
     const groups = cvDedupeBuildGroups(pairs, loadedCards);
+    cvDedupeStopCoverObserver();
     const matchedCount = new Set(pairs.flatMap(pair => [pair.leftId, pair.rightId])).size;
     const failure = cvDedupeFailures.length ? ` · ${cvDedupeFailures.length} 张读取失败（未纳入比较）` : '';
     cvDedupeSetProgress(`已比对 ${count} 张 · 发现 ${groups.length} 组疑似重复（涉及 ${matchedCount} 张）${failure}`, 1);
@@ -2540,6 +2629,7 @@ async function cvDedupeRenderResults() {
     const addMore = () => {
         const end = Math.min(shown + 30, groups.length);
         list.insertAdjacentHTML('beforeend', groups.slice(shown, end).map((group, index) => cvDedupeRenderGroup(group, shown + index)).join(''));
+        cvDedupeObserveCovers(target);
         shown = end;
         target.querySelector('#cv_dedupe_more')?.remove();
         if (shown < groups.length) {
@@ -2576,6 +2666,7 @@ async function cvDedupeRun(force = false) {
     const cancel = layer.querySelector('#cv_dedupe_cancel');
     start.disabled = forceButton.disabled = true;
     cancel.hidden = false;
+    cvDedupeStopCoverObserver();
     layer.querySelector('#cv_dedupe_results').innerHTML = '<div class="cv-dedupe-empty"><i class="fa-solid fa-spinner fa-spin"></i><b>正在读取卡片内部信息</b><span>首次扫描会逐张读取，关闭窗口可以停止。扫描过程中不会修改云端角色卡。</span></div>';
     const cache = force ? new Map() : cvDedupeReadCache();
     const entries = new Map();
@@ -5889,7 +5980,7 @@ async function initialize() {
             void refreshCardListFromServer().catch(error => console.warn('[CardVault] background card-list warmup skipped', error));
             void runImportGuardianSweep({ force: true });
         }
-        console.info(`[CardVault] Full 1.3.0 loaded: ST ${sillyTavernUserHandle} -> ${accountDisplayName(requiredCardVaultAccount())}; transport=${cardVaultTransportMode}`);
+        console.info(`[CardVault] Full 1.3.1 loaded: ST ${sillyTavernUserHandle} -> ${accountDisplayName(requiredCardVaultAccount())}; transport=${cardVaultTransportMode}`);
     } catch (error) {
         initialized = false;
         console.error('[CardVault] Initialization failed', error);
@@ -5899,6 +5990,7 @@ async function initialize() {
 
 function handleEscape(event) {
     if (event.key !== 'Escape') return;
+    if (document.querySelector('.cv-dedupe-zoom')) { cvDedupeCloseZoom(); return; }
     if (document.querySelector('.cv-dedupe-layer')) { cvDedupeClose(); return; }
     if (document.querySelector('.cv-overlay')) closeOverlay();
 }
@@ -5908,7 +6000,7 @@ document.addEventListener('keydown', handleEscape);
 
 // Optional compatibility bridge: standalone CardVault can still be opened by an existing VVV shell if present.
 globalThis.VVVUnifiedCardVault = Object.assign(globalThis.VVVUnifiedCardVault || {}, {
-    version: '1.3.0-full',
+    version: '1.3.1-full',
     open: async () => { if (!initialized) await initialize(); return openLibrary(); },
     close: () => closeOverlay(),
     verify: (opts={quiet:true}) => verify(opts),
