@@ -2269,3 +2269,47 @@ body.cv-no-scroll{
     aspect-ratio: 1 / 1 !important;
   }
 }
+
+
+/* =========================================================
+   CardVault 1.2.7 — 桌面紧凑角色卡库（封面约 1/4 面积）
+   1450px 宽窗口约 6 列；缩小的是卡片占位，不改变原图片文件。
+   仅作用于“角色卡库”列表：游玩备份、详情大图、手机布局不变。
+   ========================================================= */
+@media (min-width: 761px) {
+  /* 随卡库可用宽度自动列数：宽桌面 6 列，中等窗口逐级变成 5/4/3 列。 */
+  .cv-overlay:not(.cv-mobile-fullscreen) .cv-grid:not(.cv-play-grid) {
+    grid-template-columns: repeat(auto-fill, minmax(min(100%, 205px), 1fr)) !important;
+    gap: 9px !important;
+  }
+
+  /* 封面宽、高均随卡片约减半，保持填充裁切方式；角色详情不受影响。 */
+  .cv-overlay:not(.cv-mobile-fullscreen) .cv-grid:not(.cv-play-grid) .cv-card .cv-cover-wrap {
+    width: 100%;
+    aspect-ratio: 5 / 4 !important;
+    max-height: none !important;
+  }
+
+  /* 紧凑尺寸下仍保留作者、标题、格式及“查看简介”入口。 */
+  .cv-overlay:not(.cv-mobile-fullscreen) .cv-grid:not(.cv-play-grid) .cv-card-heading {
+    padding: 8px 9px 7px;
+    gap: 4px;
+  }
+  .cv-overlay:not(.cv-mobile-fullscreen) .cv-grid:not(.cv-play-grid) .cv-card-title {
+    font-size: 12px;
+  }
+  .cv-overlay:not(.cv-mobile-fullscreen) .cv-grid:not(.cv-play-grid) .cv-card-info {
+    min-height: 33px;
+    padding: 7px 9px !important;
+    gap: 5px !important;
+  }
+  .cv-overlay:not(.cv-mobile-fullscreen) .cv-grid:not(.cv-play-grid) .cv-card .cv-ai-card-tags-overlay span {
+    font-size: 9px !important;
+    padding: 3px 5px !important;
+  }
+
+  /* 配合原本的按需渲染，避免列表滚动时继续使用旧大卡预估高度。 */
+  .cv-overlay:not(.cv-mobile-fullscreen) .cv-grid:not(.cv-play-grid) .cv-card {
+    contain-intrinsic-size: auto 280px;
+  }
+}
