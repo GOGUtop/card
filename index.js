@@ -3,7 +3,6 @@ const EXTENSION_NAME = 'cardvault-sillytavern-extension';
 // 注意：浏览器端扩展无法真正隐藏静态密码；不要把包含此密码的构建发布到公开仓库。
 const CARDVAULT_AUTO_LOGIN_USERNAME = 'card2';
 const CARDVAULT_AUTO_LOGIN_PASSWORD = '2';
-const CARDVAULT_FLOAT_POSITION_KEY = 'cardvault_floating_ball_position_v1';
 const CARDVAULT_AI_PERSISTENT_KEY = 'cardvault_ai_classifications_persistent_v1';
 const CARDVAULT_AI_SHARED_SETTINGS_KEY = 'cardvault-ai-classifications-shared-v1';
 const CARDVAULT_AI_SERVER_CARD_PREFIX = '__CardVault_AI_Classification_DB__';
@@ -107,7 +106,7 @@ let allowedCardVaultUsername = '';
 let cardVaultAccessDisabled = false;
 let activeTokenStorageKey = '';
 let initialized = false;
-let floatingBallCleanup = null;
+let wandMenuCleanup = null;
 let permanentLoginKeepAliveTimer = null;
 let importGuardianCleanups = [];
 let importGuardianRunning = false;
@@ -206,7 +205,7 @@ function requiredCardVaultAccount() {
 
 function removeCardVaultUi() {
     closeOverlay();
-    removeFloatingBall();
+    removeCardVaultWandMenu();
     document.querySelectorAll('#cardvault_settings').forEach(node => node.remove());
 }
 
@@ -1128,7 +1127,7 @@ function installInteractiveCardFallbacks() {
     }
 
     globalThis.cardVaultSeikanFallback = {
-        version: '1.2.4-full',
+        version: '1.2.8-full',
         rescan: () => rescanSeikanInteractiveRoots(document, { deepShadowScan: true }),
         send: role => sendSeikanRoleChoice(role),
         testOwner: () => sendSeikanRoleChoice('owner'),
@@ -4871,159 +4870,106 @@ async function uploadLocalFiles(files) {
     if (document.querySelector('.cv-overlay')) await loadCards(document.querySelector('#cv_library_search')?.value || '');
 }
 
-function removeFloatingBall() {
-    if (typeof floatingBallCleanup === 'function') {
-        try { floatingBallCleanup(); } catch (_) {}
+// CardVault 快捷操作注册到 SillyTavern 左下角的「魔法棒」菜单。
+// 不再创建屏幕边缘悬浮球，也不改动酒馆自带的菜单按钮。
+function removeCardVaultWandMenu() {
+    if (typeof wandMenuCleanup === 'function') {
+        try { wandMenuCleanup(); } catch (error) { console.warn('[CardVault] 清理魔法棒菜单失败', error); }
     }
-    floatingBallCleanup = null;
+    wandMenuCleanup = null;
+    document.querySelector('#cv_wand_entry')?.remove();
+    document.querySelector('#cv_wand_action_panel')?.remove();
+    // 兼容从旧版悬浮球升级后残留的 DOM。
     document.querySelector('#cv_floating_root')?.remove();
 }
 
-function installFloatingBall() {
-    removeFloatingBall();
+function installCardVaultWandMenu() {
+    removeCardVaultWandMenu();
 
-    const root = document.createElement('div');
-    root.id = 'cv_floating_root';
-    root.className = 'cv-floating-root';
-    root.innerHTML = `
-      <div class="cv-floating-menu" role="menu" aria-label="CardVault 快捷操作">
-        <button type="button" class="cv-floating-action" data-cv-float-action="open" role="menuitem">
-          <i class="fa-solid fa-box-archive"></i><span><b>打开云端卡库</b><small>浏览、恢复与管理云端角色卡</small></span>
-        </button>
-        <button type="button" class="cv-floating-action" data-cv-float-action="backup" role="menuitem">
-          <i class="fa-solid fa-cloud-arrow-up"></i><span><b>备份当前角色</b><small>把当前酒馆角色备份到云端</small></span>
-        </button>
-        <button type="button" class="cv-floating-action" data-cv-float-action="sync-return" role="menuitem">
-          <i class="fa-solid fa-cloud-arrow-up"></i><span><b>同步当前角色并归还</b><small>同步进度后归还当前角色到 CardVault</small></span>
-        </button>
-        <button type="button" class="cv-floating-action cv-floating-action-danger" data-cv-float-action="archive" role="menuitem">
-          <i class="fa-solid fa-boxes-packing"></i><span><b>完整归档并清理</b><small>归档角色、聊天、世界书后确认清理</small></span>
-        </button>
-      </div>
-      <button type="button" class="cv-floating-ball" aria-label="CardVault 快捷操作" title="CardVault · 拖动后自动半隐藏吸边 / 点击展开">
-        <i class="fa-solid fa-box-archive"></i>
-        <span class="cv-floating-online" aria-hidden="true"></span>
-      </button>`;
-    document.body.append(root);
+    const entry = document.createElement('div');
+    entry.id = 'cv_wand_entry';
+    entry.className = 'list-group-item flex-container flexGap5 cv-wand-entry';
+    entry.setAttribute('role', 'button');
+    entry.setAttribute('tabindex', '0');
+    entry.setAttribute('aria-controls', 'cv_wand_action_panel');
+    entry.setAttribute('aria-expanded', 'false');
+    entry.title = 'CardVault · 展开快捷操作';
+    entry.innerHTML = `
+        <i class="fa-solid fa-box-archive extensionsMenuExtensionButton" aria-hidden="true"></i>
+        <span class="cv-wand-entry-text">CardVault · 角色卡库</span>
+        <i class="fa-solid fa-chevron-down cv-wand-chevron" aria-hidden="true"></i>`;
 
-    const ball = root.querySelector('.cv-floating-ball');
-    const menu = root.querySelector('.cv-floating-menu');
-    const actions = [...root.querySelectorAll('.cv-floating-action')];
-    let size = 58;
-    const hiddenRatio = 0.5;
-    let x = Math.max(8, window.innerWidth - size - 18);
-    let y = Math.max(8, window.innerHeight - size - 110);
-    let dragging = false;
-    let moved = false;
-    let activePointerId = null;
-    let startX = 0;
-    let startY = 0;
-    let startLeft = 0;
-    let startTop = 0;
+    const panel = document.createElement('div');
+    panel.id = 'cv_wand_action_panel';
+    panel.className = 'cv-wand-action-panel';
+    panel.setAttribute('role', 'group');
+    panel.setAttribute('aria-label', 'CardVault 快捷操作');
+    panel.hidden = true;
+    panel.innerHTML = `
+        <button type="button" class="cv-wand-action" data-cv-wand-action="open">
+            <i class="fa-solid fa-box-archive" aria-hidden="true"></i>
+            <span><b>打开云端卡库</b><small>浏览、恢复与管理云端角色卡</small></span>
+        </button>
+        <button type="button" class="cv-wand-action" data-cv-wand-action="backup">
+            <i class="fa-solid fa-cloud-arrow-up" aria-hidden="true"></i>
+            <span><b>备份当前角色</b><small>把当前酒馆角色备份到云端</small></span>
+        </button>
+        <button type="button" class="cv-wand-action" data-cv-wand-action="sync-return">
+            <i class="fa-solid fa-cloud-arrow-up" aria-hidden="true"></i>
+            <span><b>同步当前角色并归还</b><small>同步进度后归还当前角色到 CardVault</small></span>
+        </button>
+        <button type="button" class="cv-wand-action cv-wand-action-danger" data-cv-wand-action="archive">
+            <i class="fa-solid fa-boxes-packing" aria-hidden="true"></i>
+            <span><b>完整归档并清理</b><small>归档角色、聊天、世界书后确认清理</small></span>
+        </button>`;
+
+    const actionButtons = [...panel.querySelectorAll('.cv-wand-action')];
     let busy = false;
-    let restoredSide = null;
 
-    try {
-        const saved = JSON.parse(localStorage.getItem(CARDVAULT_FLOAT_POSITION_KEY) || 'null');
-        if (saved?.side === 'left' || saved?.side === 'right') restoredSide = saved.side;
-        if (Number.isFinite(saved?.x)) x = saved.x;
-        if (Number.isFinite(saved?.y)) y = saved.y;
-    } catch (_) {}
-
-    const viewportWidth = () => Math.max(1, Math.round(globalThis.visualViewport?.width || window.innerWidth || document.documentElement.clientWidth || 1));
-    const viewportHeight = () => Math.max(1, Math.round(globalThis.visualViewport?.height || window.innerHeight || document.documentElement.clientHeight || 1));
-    const measureSize = () => {
-        const measured = Math.round(ball.getBoundingClientRect().width || 0);
-        if (measured > 0) size = measured;
-        return size;
-    };
-    const clampPosition = () => {
-        measureSize();
-        const width = viewportWidth();
-        const height = viewportHeight();
-        const hidden = size * hiddenRatio;
-        const minX = -hidden;
-        const maxX = width - size + hidden;
-        x = Math.min(Math.max(minX, x), maxX);
-        y = Math.min(Math.max(8, y), Math.max(8, height - size - 8));
+    const attachToMenu = () => {
+        const menu = document.querySelector('#extensionsMenu');
+        if (!menu) return;
+        if (entry.parentElement !== menu || panel.previousElementSibling !== entry) {
+            menu.append(entry, panel);
+        }
     };
 
-    const place = () => {
-        clampPosition();
-        // 用 inline !important 固定坐标，避免酒馆主题或移动端样式覆盖吸边位置。
-        root.style.setProperty('left', `${Math.round(x)}px`, 'important');
-        root.style.setProperty('top', `${Math.round(y)}px`, 'important');
-        root.style.setProperty('right', 'auto', 'important');
-        root.style.setProperty('bottom', 'auto', 'important');
-        const opensRight = x < viewportWidth() / 2;
-        root.dataset.side = opensRight ? 'right' : 'left';
-        // 菜单保持在可视区内，悬浮球贴近顶部/底部时也不会被裁掉。
-        const estimatedHeight = 272;
-        const naturalTop = (size - estimatedHeight) / 2;
-        const minTop = 8 - y;
-        const maxTop = viewportHeight() - y - estimatedHeight - 8;
-        menu.style.top = `${Math.round(Math.min(Math.max(naturalTop, minTop), maxTop))}px`;
+    const setPanelOpen = open => {
+        const expanded = Boolean(open) && !busy;
+        panel.hidden = !expanded;
+        entry.classList.toggle('cv-wand-expanded', expanded);
+        entry.setAttribute('aria-expanded', String(expanded));
     };
 
-    const savePosition = () => {
-        try {
-            const side = x + size / 2 <= viewportWidth() / 2 ? 'left' : 'right';
-            localStorage.setItem(CARDVAULT_FLOAT_POSITION_KEY, JSON.stringify({ side, y: Math.round(y) }));
-        } catch (_) {}
+    const setBusy = (value, description = '') => {
+        busy = Boolean(value);
+        entry.classList.toggle('cv-wand-busy', busy);
+        entry.setAttribute('aria-busy', String(busy));
+        entry.title = busy ? (description || 'CardVault 正在处理……') : 'CardVault · 展开快捷操作';
+        actionButtons.forEach(button => { button.disabled = busy; });
+        if (busy) setPanelOpen(false);
     };
 
-    const snapToNearestEdge = ({ save = true, preferredSide = null } = {}) => {
-        clampPosition();
-        const width = viewportWidth();
-        const hidden = size * hiddenRatio;
-        const leftX = -hidden;
-        const rightX = width - size + hidden;
-        const centerX = x + size / 2;
-        const side = preferredSide === 'left' || preferredSide === 'right'
-            ? preferredSide
-            : (centerX <= width / 2 ? 'left' : 'right');
-        x = side === 'left' ? leftX : rightX;
-        place();
-        root.dataset.snapped = side;
-        if (save) savePosition();
-    };
-
-    const setMenuOpen = open => {
-        const next = !!open && !busy;
-        root.classList.toggle('is-open', next);
-        ball.setAttribute('aria-expanded', next ? 'true' : 'false');
-    };
-
-    const setBusy = (value, label = '') => {
-        busy = !!value;
-        root.classList.toggle('is-busy', busy);
-        ball.disabled = busy;
-        if (label) ball.title = label;
-        else ball.title = 'CardVault · 拖动后自动半隐藏吸边 / 点击展开';
-        actions.forEach(button => { button.disabled = busy; });
-        if (busy) setMenuOpen(false);
-    };
-
-    const runAction = async (action) => {
+    const runAction = async action => {
         if (busy) return;
-        setBusy(true, 'CardVault 正在处理……');
+        setBusy(true);
         try {
             if (!await verify({ quiet: true })) throw new Error('CardVault 自动登录失败');
             if (action === 'open') {
                 await openLibrary();
             } else if (action === 'backup') {
-                ball.title = 'CardVault · 正在备份当前角色';
+                entry.title = 'CardVault · 正在备份当前角色';
                 await backupCurrentCharacter();
             } else if (action === 'sync-return') {
-                ball.title = 'CardVault · 正在同步并归还当前角色';
+                entry.title = 'CardVault · 正在同步并归还当前角色';
                 await syncCurrentAndReturn(progress => {
-                    if (progress?.stage) ball.title = `CardVault · ${progress.stage}`;
+                    if (progress?.stage) entry.title = `CardVault · ${progress.stage}`;
                 });
             } else if (action === 'archive') {
                 await archiveAllAndCleanup(progress => {
                     const charPart = `${progress.characterIndex || 0}/${progress.characterTotal || 0}`;
                     const detail = progress.stage === 'chat' ? ` · 聊天 ${progress.current}/${progress.total}` : '';
-                    ball.title = `CardVault · 归档 ${charPart}${detail} ${progress.name || ''}`;
+                    entry.title = `CardVault · 归档 ${charPart}${detail} ${progress.name || ''}`;
                 });
             }
         } catch (error) {
@@ -5033,83 +4979,67 @@ function installFloatingBall() {
         }
     };
 
-    const onBallPointerDown = event => {
-        if (busy || event.button !== undefined && event.button !== 0) return;
-        activePointerId = event.pointerId;
-        dragging = false;
-        moved = false;
-        startX = event.clientX;
-        startY = event.clientY;
-        startLeft = x;
-        startTop = y;
-        try { ball.setPointerCapture(activePointerId); } catch (_) {}
-    };
-    const onBallPointerMove = event => {
-        if (activePointerId === null || event.pointerId !== activePointerId) return;
-        const dx = event.clientX - startX;
-        const dy = event.clientY - startY;
-        if (!dragging && Math.hypot(dx, dy) >= 5) {
-            dragging = true;
-            moved = true;
-            setMenuOpen(false);
-            root.classList.add('is-dragging');
-        }
-        if (!dragging) return;
-        event.preventDefault();
-        x = startLeft + dx;
-        y = startTop + dy;
-        // 靠近左右边缘时给出磁吸反馈；松手后无论在哪里都会贴到最近边缘。
-        place();
-    };
-    const onBallPointerUp = event => {
-        if (activePointerId === null || event.pointerId !== activePointerId) return;
-        try { ball.releasePointerCapture(activePointerId); } catch (_) {}
-        activePointerId = null;
-        const wasDragging = dragging;
-        dragging = false;
-        root.classList.remove('is-dragging');
-        if (wasDragging) snapToNearestEdge();
-        if (moved) setTimeout(() => { moved = false; }, 0);
-    };
-    const onBallClick = event => {
+    const onEntryClick = event => {
         event.preventDefault();
         event.stopPropagation();
-        if (moved || busy) return;
-        setMenuOpen(!root.classList.contains('is-open'));
+        if (busy) return;
+        setPanelOpen(panel.hidden);
+    };
+    const onEntryKeyDown = event => {
+        if (event.key !== 'Enter' && event.key !== ' ') return;
+        event.preventDefault();
+        onEntryClick(event);
+    };
+    const onPanelClick = event => {
+        const button = event.target.closest('button[data-cv-wand-action]');
+        if (!button || !panel.contains(button)) return;
+        event.preventDefault();
+        event.stopPropagation();
+        if (busy) return;
+        const action = button.dataset.cvWandAction;
+        setPanelOpen(false);
+        void runAction(action);
     };
     const onOutsidePointerDown = event => {
-        if (!root.contains(event.target)) setMenuOpen(false);
+        if (!entry.contains(event.target) && !panel.contains(event.target)) setPanelOpen(false);
     };
-    const onResize = () => { snapToNearestEdge({ preferredSide: root.dataset.snapped || restoredSide }); };
+    const onKeyDown = event => {
+        if (event.key === 'Escape' && !panel.hidden) {
+            setPanelOpen(false);
+            entry.focus({ preventScroll: true });
+        }
+    };
 
-    ball.addEventListener('pointerdown', onBallPointerDown);
-    ball.addEventListener('pointermove', onBallPointerMove);
-    ball.addEventListener('pointerup', onBallPointerUp);
-    ball.addEventListener('pointercancel', onBallPointerUp);
-    // 某些移动端 WebView 会在拖出按钮范围后丢失按钮级 pointerup；窗口级兜底保证一定执行吸边。
-    window.addEventListener('pointerup', onBallPointerUp, true);
-    window.addEventListener('pointercancel', onBallPointerUp, true);
-    ball.addEventListener('click', onBallClick);
-    actions.forEach(button => button.addEventListener('click', event => {
-        event.preventDefault();
-        event.stopPropagation();
-        const action = button.dataset.cvFloatAction;
-        setMenuOpen(false);
-        void runAction(action);
-    }));
+    entry.addEventListener('click', onEntryClick);
+    entry.addEventListener('keydown', onEntryKeyDown);
+    panel.addEventListener('click', onPanelClick);
     document.addEventListener('pointerdown', onOutsidePointerDown, true);
-    window.addEventListener('resize', onResize);
-    // 启动后立刻贴边；再等两帧按真实 CSS 尺寸复算一次，兼容手机 54px 悬浮球和主题延迟样式。
-    snapToNearestEdge({ save: true, preferredSide: restoredSide });
-    requestAnimationFrame(() => requestAnimationFrame(() => snapToNearestEdge({ save: true, preferredSide: root.dataset.snapped || restoredSide })));
+    document.addEventListener('keydown', onKeyDown);
 
+    // 如果魔法棒菜单尚未加载，等它出现后挂载；挂载成功即停止观察，
+    // 避免监听整个聊天 DOM 造成不必要的性能开销。
+    let observer = null;
+    if (!document.querySelector('#extensionsMenu')) {
+        observer = new MutationObserver(() => {
+            if (!document.querySelector('#extensionsMenu')) return;
+            attachToMenu();
+            observer?.disconnect();
+            observer = null;
+        });
+        observer.observe(document.body, { childList: true, subtree: true });
+    } else {
+        attachToMenu();
+    }
 
-    floatingBallCleanup = () => {
+    wandMenuCleanup = () => {
+        observer?.disconnect();
         document.removeEventListener('pointerdown', onOutsidePointerDown, true);
-        window.removeEventListener('pointerup', onBallPointerUp, true);
-        window.removeEventListener('pointercancel', onBallPointerUp, true);
-        window.removeEventListener('resize', onResize);
-        root.remove();
+        document.removeEventListener('keydown', onKeyDown);
+        entry.removeEventListener('click', onEntryClick);
+        entry.removeEventListener('keydown', onEntryKeyDown);
+        panel.removeEventListener('click', onPanelClick);
+        entry.remove();
+        panel.remove();
     };
 }
 
@@ -5420,7 +5350,7 @@ async function initialize() {
         if (!container) throw new Error('找不到酒馆扩展设置区域');
         container.insertAdjacentHTML('beforeend', html);
         bindSettings();
-        installFloatingBall();
+        installCardVaultWandMenu();
         const verified = await verify({ quiet: true });
         startPermanentLoginKeepAlive();
         installImportGuardian();
@@ -5429,7 +5359,7 @@ async function initialize() {
             void refreshCardListFromServer().catch(error => console.warn('[CardVault] background card-list warmup skipped', error));
             void runImportGuardianSweep({ force: true });
         }
-        console.info(`[CardVault] Full 1.2.4 loaded: ST ${sillyTavernUserHandle} -> ${accountDisplayName(requiredCardVaultAccount())}; transport=${cardVaultTransportMode}`);
+        console.info(`[CardVault] Full 1.2.8 loaded: ST ${sillyTavernUserHandle} -> ${accountDisplayName(requiredCardVaultAccount())}; transport=${cardVaultTransportMode}`);
     } catch (error) {
         initialized = false;
         console.error('[CardVault] Initialization failed', error);
@@ -5446,7 +5376,7 @@ document.addEventListener('keydown', handleEscape);
 
 // Optional compatibility bridge: standalone CardVault can still be opened by an existing VVV shell if present.
 globalThis.VVVUnifiedCardVault = Object.assign(globalThis.VVVUnifiedCardVault || {}, {
-    version: '1.2.4-full',
+    version: '1.2.8-full',
     open: async () => { if (!initialized) await initialize(); return openLibrary(); },
     close: () => closeOverlay(),
     verify: (opts={quiet:true}) => verify(opts),
