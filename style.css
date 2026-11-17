@@ -1560,7 +1560,7 @@ body.cv-no-scroll{
 .cardvault-settings .cv-proxy-option input[type="checkbox"]{flex:0 0 auto;min-width:18px;min-height:18px}
 
 
-/* ===== CardVault 魔法棒入口 + 可展开四操作按钮 ===== */
+/* ===== CardVault 魔法棒入口 + 屏幕正中央的四操作弹窗 ===== */
 #extensionsMenu > #cv_wand_entry {
     display: flex;
     align-items: center;
@@ -1570,61 +1570,139 @@ body.cv-no-scroll{
     -webkit-user-select: none;
 }
 #cv_wand_entry .cv-wand-entry-text { flex: 1; min-width: 0; }
-#cv_wand_entry .cv-wand-chevron { font-size: 11px; opacity: .66; transition: transform .16s ease; }
-#cv_wand_entry.cv-wand-expanded .cv-wand-chevron { transform: rotate(180deg); }
+#cv_wand_entry .cv-wand-chevron { font-size: 11px; opacity: .66; }
 #cv_wand_entry.cv-wand-busy { opacity: .7; cursor: progress; }
 #cv_wand_entry.cv-wand-busy .extensionsMenuExtensionButton { animation: cvWandBusy 1s linear infinite; }
 @keyframes cvWandBusy { to { transform: rotate(360deg); } }
 #cv_wand_entry:focus-visible { outline: 2px solid #d7b47c; outline-offset: -2px; }
-#extensionsMenu > #cv_wand_action_panel {
-    box-sizing: border-box;
-    width: 100%;
+
+/* 将弹窗直接挂载在 body：不受左下角扩展菜单的尺寸、滚动和裁剪影响。 */
+#cv_wand_dialog_overlay {
+    box-sizing: border-box !important;
+    position: fixed !important;
+    inset: 0 !important;
+    z-index: 2147483300 !important;
+    display: flex !important;
+    align-items: center !important;
+    justify-content: center !important;
+    padding: max(16px, env(safe-area-inset-top)) max(16px, env(safe-area-inset-right)) max(16px, env(safe-area-inset-bottom)) max(16px, env(safe-area-inset-left)) !important;
+    margin: 0 !important;
+    background: rgba(0, 0, 0, .52) !important;
+    color: var(--SmartThemeBodyColor, #f1f1f5) !important;
+}
+#cv_wand_dialog_overlay[hidden] { display: none !important; }
+#cv_wand_dialog_overlay, #cv_wand_dialog_overlay * { box-sizing: border-box; }
+#cv_wand_dialog_overlay #cv_wand_action_panel {
+    position: relative !important;
+    display: flex !important;
+    flex-direction: column !important;
+    gap: 0 !important;
+    width: min(440px, 100%) !important;
+    max-width: 100% !important;
+    max-height: min(570px, calc(100dvh - 32px)) !important;
+    overflow: hidden !important;
+    margin: auto !important;
+    padding: 0 !important;
+    border: 1px solid rgba(211, 183, 136, .3) !important;
+    border-radius: 16px !important;
+    background: #202124 !important;
+    color: #f0f0f4 !important;
+    box-shadow: 0 22px 74px rgba(0,0,0,.75) !important;
+    font-family: inherit !important;
+    text-align: left !important;
+}
+#cv_wand_dialog_overlay .cv-wand-dialog-header {
+    display: flex;
+    align-items: center;
+    gap: 11px;
+    padding: 17px 18px 15px;
+    border-bottom: 1px solid rgba(255,255,255,.09);
+}
+#cv_wand_dialog_overlay .cv-wand-dialog-brand {
     display: grid;
-    gap: 7px;
-    max-height: min(335px, 52dvh);
-    overflow-y: auto;
-    overflow-x: hidden;
-    padding: 8px 7px 10px;
-    border: 1px solid rgba(219,180,116,.22);
+    place-items: center;
+    flex: 0 0 37px;
+    height: 37px;
     border-radius: 10px;
-    background: rgba(16,16,18,.93);
-    color: var(--SmartThemeBodyColor, #eee);
+    background: rgba(215,177,116,.14);
+    color: #dfbd8a;
+    font-size: 17px;
+}
+#cv_wand_dialog_overlay .cv-wand-dialog-heading { flex: 1; min-width: 0; }
+#cv_wand_dialog_overlay #cv_wand_dialog_title {
+    margin: 0 !important;
+    color: inherit !important;
+    font-size: 16px !important;
+    font-weight: 700 !important;
+    line-height: 1.5 !important;
+}
+#cv_wand_dialog_overlay .cv-wand-dialog-heading p {
+    margin: 2px 0 0 !important;
+    color: #a8a8ad !important;
+    font-size: 12px !important;
+    line-height: 1.4 !important;
+}
+#cv_wand_dialog_overlay .cv-wand-dialog-close {
+    flex: 0 0 32px;
+    width: 32px;
+    min-width: 32px;
+    height: 32px;
+    padding: 0;
+    border: 0;
+    border-radius: 8px;
+    background: transparent;
+    color: #b4b4ba;
+    cursor: pointer;
+}
+#cv_wand_dialog_overlay .cv-wand-dialog-close:hover { background: rgba(255,255,255,.11); color: #fff; }
+#cv_wand_dialog_overlay .cv-wand-dialog-actions {
+    display: grid;
+    gap: 9px;
+    padding: 14px 16px 17px;
+    overflow-y: auto;
     scrollbar-width: thin;
 }
-#extensionsMenu > #cv_wand_action_panel[hidden] { display: none !important; }
-#cv_wand_action_panel > .cv-wand-action {
-    box-sizing: border-box;
-    display: grid;
-    grid-template-columns: 27px minmax(0,1fr);
-    align-items: center;
-    width: 100%;
-    min-height: 51px;
-    gap: 6px;
-    padding: 7px 8px;
-    border: 1px solid rgba(255,255,255,.10);
-    border-radius: 9px;
-    background: rgba(255,255,255,.055);
-    color: var(--SmartThemeBodyColor, #eee);
-    text-align: left;
+#cv_wand_dialog_overlay .cv-wand-action {
+    display: grid !important;
+    grid-template-columns: 33px minmax(0, 1fr) !important;
+    align-items: center !important;
+    gap: 12px !important;
+    width: 100% !important;
+    min-height: 67px !important;
+    margin: 0 !important;
+    padding: 11px 13px !important;
+    border: 1px solid rgba(255,255,255,.12) !important;
+    border-radius: 11px !important;
+    background: #2a2b30 !important;
+    color: #f3f3f5 !important;
+    text-align: left !important;
     cursor: pointer;
-    font-family: inherit;
+    font-family: inherit !important;
+    box-shadow: none !important;
 }
-#cv_wand_action_panel > .cv-wand-action:hover:not(:disabled),
-#cv_wand_action_panel > .cv-wand-action:focus-visible {
-    background: rgba(255,255,255,.11);
-    border-color: rgba(219,180,116,.55);
+#cv_wand_dialog_overlay .cv-wand-action:hover:not(:disabled),
+#cv_wand_dialog_overlay .cv-wand-action:focus-visible {
+    background: #36363b !important;
+    border-color: rgba(219,180,116,.6) !important;
+    outline: none;
 }
-#cv_wand_action_panel > .cv-wand-action:disabled { opacity: .5; cursor: progress; }
-#cv_wand_action_panel .cv-wand-action > i { font-size: 16px; text-align: center; color: #d8b278; }
-#cv_wand_action_panel .cv-wand-action > span { min-width: 0; display: grid; gap: 2px; }
-#cv_wand_action_panel .cv-wand-action b { font-size: 13px; line-height: 1.25; font-weight: 650; }
-#cv_wand_action_panel .cv-wand-action small { font-size: 10.5px; line-height: 1.3; opacity: .72; white-space: normal; }
-#cv_wand_action_panel .cv-wand-action-danger > i { color: #e3a06f; }
+#cv_wand_dialog_overlay .cv-wand-action:disabled { opacity: .55; cursor: progress; }
+#cv_wand_dialog_overlay .cv-wand-action > i {
+    font-size: 20px;
+    text-align: center;
+    color: #ddb984;
+}
+#cv_wand_dialog_overlay .cv-wand-action > span { min-width: 0; display: grid; gap: 3px; }
+#cv_wand_dialog_overlay .cv-wand-action b { font-size: 14px; line-height: 1.3; font-weight: 650; }
+#cv_wand_dialog_overlay .cv-wand-action small { font-size: 11.5px; line-height: 1.4; color: #b7b7bc; white-space: normal; }
+#cv_wand_dialog_overlay .cv-wand-action-danger > i { color: #e2a27a; }
 .cv-floating-help { display: flex; align-items: flex-start; gap: 7px; }
 .cv-auth-card-auto .cv-login-button { margin-top: 2px; }
 @media (max-width: 600px) {
-    #extensionsMenu > #cv_wand_action_panel { max-height: min(290px, 46dvh); }
-    #cv_wand_action_panel > .cv-wand-action { min-height: 50px; }
+    #cv_wand_dialog_overlay #cv_wand_action_panel { width: min(440px, 100%) !important; border-radius: 13px !important; }
+    #cv_wand_dialog_overlay .cv-wand-dialog-header { padding: 13px 14px; }
+    #cv_wand_dialog_overlay .cv-wand-dialog-actions { padding: 11px 12px 13px; gap: 7px; }
+    #cv_wand_dialog_overlay .cv-wand-action { min-height: 58px !important; padding: 9px 10px !important; }
 }
 /* ===============================================================
    CardVault Gallery / 画廊外观适配 (外观增强，不替换原业务逻辑)

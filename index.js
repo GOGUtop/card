@@ -1127,7 +1127,7 @@ function installInteractiveCardFallbacks() {
     }
 
     globalThis.cardVaultSeikanFallback = {
-        version: '1.2.8-full',
+        version: '1.2.9-full',
         rescan: () => rescanSeikanInteractiveRoots(document, { deepShadowScan: true }),
         send: role => sendSeikanRoleChoice(role),
         testOwner: () => sendSeikanRoleChoice('owner'),
@@ -4870,17 +4870,17 @@ async function uploadLocalFiles(files) {
     if (document.querySelector('.cv-overlay')) await loadCards(document.querySelector('#cv_library_search')?.value || '');
 }
 
-// CardVault 快捷操作注册到 SillyTavern 左下角的「魔法棒」菜单。
-// 不再创建屏幕边缘悬浮球，也不改动酒馆自带的菜单按钮。
+// CardVault 入口仍位于 SillyTavern 左下角的魔法棒菜单。
+// 操作面板挂载在 body 下作为居中模态弹窗，避免被扩展菜单的滚动/裁剪区域截断。
 function removeCardVaultWandMenu() {
     if (typeof wandMenuCleanup === 'function') {
         try { wandMenuCleanup(); } catch (error) { console.warn('[CardVault] 清理魔法棒菜单失败', error); }
     }
     wandMenuCleanup = null;
     document.querySelector('#cv_wand_entry')?.remove();
+    document.querySelector('#cv_wand_dialog_overlay')?.remove();
     document.querySelector('#cv_wand_action_panel')?.remove();
-    // 兼容从旧版悬浮球升级后残留的 DOM。
-    document.querySelector('#cv_floating_root')?.remove();
+    document.querySelector('#cv_floating_root')?.remove(); // 兼容旧版悬浮球
 }
 
 function installCardVaultWandMenu() {
@@ -4891,67 +4891,85 @@ function installCardVaultWandMenu() {
     entry.className = 'list-group-item flex-container flexGap5 cv-wand-entry';
     entry.setAttribute('role', 'button');
     entry.setAttribute('tabindex', '0');
+    entry.setAttribute('aria-haspopup', 'dialog');
     entry.setAttribute('aria-controls', 'cv_wand_action_panel');
     entry.setAttribute('aria-expanded', 'false');
-    entry.title = 'CardVault · 展开快捷操作';
+    entry.title = 'CardVault · 打开快捷操作';
     entry.innerHTML = `
         <i class="fa-solid fa-box-archive extensionsMenuExtensionButton" aria-hidden="true"></i>
         <span class="cv-wand-entry-text">CardVault · 角色卡库</span>
-        <i class="fa-solid fa-chevron-down cv-wand-chevron" aria-hidden="true"></i>`;
+        <i class="fa-solid fa-up-right-from-square cv-wand-chevron" aria-hidden="true"></i>`;
 
-    const panel = document.createElement('div');
-    panel.id = 'cv_wand_action_panel';
-    panel.className = 'cv-wand-action-panel';
-    panel.setAttribute('role', 'group');
-    panel.setAttribute('aria-label', 'CardVault 快捷操作');
-    panel.hidden = true;
-    panel.innerHTML = `
-        <button type="button" class="cv-wand-action" data-cv-wand-action="open">
-            <i class="fa-solid fa-box-archive" aria-hidden="true"></i>
-            <span><b>打开云端卡库</b><small>浏览、恢复与管理云端角色卡</small></span>
-        </button>
-        <button type="button" class="cv-wand-action" data-cv-wand-action="backup">
-            <i class="fa-solid fa-cloud-arrow-up" aria-hidden="true"></i>
-            <span><b>备份当前角色</b><small>把当前酒馆角色备份到云端</small></span>
-        </button>
-        <button type="button" class="cv-wand-action" data-cv-wand-action="sync-return">
-            <i class="fa-solid fa-cloud-arrow-up" aria-hidden="true"></i>
-            <span><b>同步当前角色并归还</b><small>同步进度后归还当前角色到 CardVault</small></span>
-        </button>
-        <button type="button" class="cv-wand-action cv-wand-action-danger" data-cv-wand-action="archive">
-            <i class="fa-solid fa-boxes-packing" aria-hidden="true"></i>
-            <span><b>完整归档并清理</b><small>归档角色、聊天、世界书后确认清理</small></span>
-        </button>`;
-
-    const actionButtons = [...panel.querySelectorAll('.cv-wand-action')];
+    const overlay = document.createElement('div');
+    overlay.id = 'cv_wand_dialog_overlay';
+    overlay.className = 'cv-wand-dialog-overlay';
+    overlay.hidden = true;
+    overlay.innerHTML = `
+        <section id="cv_wand_action_panel" class="cv-wand-action-panel" role="dialog" aria-modal="true" aria-labelledby="cv_wand_dialog_title" tabindex="-1">
+            <div class="cv-wand-dialog-header">
+                <div class="cv-wand-dialog-brand" aria-hidden="true"><i class="fa-solid fa-box-archive"></i></div>
+                <div class="cv-wand-dialog-heading">
+                    <h2 id="cv_wand_dialog_title">CardVault · 角色卡库</h2>
+                    <p>选择要执行的操作</p>
+                </div>
+                <button type="button" class="cv-wand-dialog-close" aria-label="关闭 CardVault 快捷操作" title="关闭"><i class="fa-solid fa-xmark" aria-hidden="true"></i></button>
+            </div>
+            <div class="cv-wand-dialog-actions">
+                <button type="button" class="cv-wand-action" data-cv-wand-action="open">
+                    <i class="fa-solid fa-box-archive" aria-hidden="true"></i>
+                    <span><b>打开云端卡库</b><small>浏览、恢复与管理云端角色卡</small></span>
+                </button>
+                <button type="button" class="cv-wand-action" data-cv-wand-action="backup">
+                    <i class="fa-solid fa-cloud-arrow-up" aria-hidden="true"></i>
+                    <span><b>备份当前角色</b><small>把当前酒馆角色备份到云端</small></span>
+                </button>
+                <button type="button" class="cv-wand-action" data-cv-wand-action="sync-return">
+                    <i class="fa-solid fa-rotate" aria-hidden="true"></i>
+                    <span><b>同步当前角色并归还</b><small>同步进度后归还当前角色到 CardVault</small></span>
+                </button>
+                <button type="button" class="cv-wand-action cv-wand-action-danger" data-cv-wand-action="archive">
+                    <i class="fa-solid fa-boxes-packing" aria-hidden="true"></i>
+                    <span><b>完整归档并清理</b><small>归档角色、聊天、世界书后确认清理</small></span>
+                </button>
+            </div>
+        </section>`;
+    const panel = overlay.querySelector('#cv_wand_action_panel');
+    const closeButton = overlay.querySelector('.cv-wand-dialog-close');
+    const actionButtons = [...overlay.querySelectorAll('.cv-wand-action')];
     let busy = false;
+    let lastFocused = null;
 
     const attachToMenu = () => {
         const menu = document.querySelector('#extensionsMenu');
-        if (!menu) return;
-        if (entry.parentElement !== menu || panel.previousElementSibling !== entry) {
-            menu.append(entry, panel);
-        }
+        if (menu && entry.parentElement !== menu) menu.append(entry);
     };
 
     const setPanelOpen = open => {
         const expanded = Boolean(open) && !busy;
-        panel.hidden = !expanded;
+        if (expanded === !overlay.hidden) return;
+        if (expanded) lastFocused = document.activeElement;
+        overlay.hidden = !expanded;
         entry.classList.toggle('cv-wand-expanded', expanded);
         entry.setAttribute('aria-expanded', String(expanded));
+        if (expanded) {
+            closeButton.focus({ preventScroll: true });
+        } else if (lastFocused?.isConnected && !busy) {
+            lastFocused.focus({ preventScroll: true });
+        }
     };
 
     const setBusy = (value, description = '') => {
         busy = Boolean(value);
         entry.classList.toggle('cv-wand-busy', busy);
         entry.setAttribute('aria-busy', String(busy));
-        entry.title = busy ? (description || 'CardVault 正在处理……') : 'CardVault · 展开快捷操作';
+        entry.title = busy ? (description || 'CardVault 正在处理……') : 'CardVault · 打开快捷操作';
         actionButtons.forEach(button => { button.disabled = busy; });
         if (busy) setPanelOpen(false);
     };
 
     const runAction = async action => {
         if (busy) return;
+        setPanelOpen(false);
         setBusy(true);
         try {
             if (!await verify({ quiet: true })) throw new Error('CardVault 自动登录失败');
@@ -4982,42 +5000,49 @@ function installCardVaultWandMenu() {
     const onEntryClick = event => {
         event.preventDefault();
         event.stopPropagation();
-        if (busy) return;
-        setPanelOpen(panel.hidden);
+        if (!busy) setPanelOpen(overlay.hidden);
     };
     const onEntryKeyDown = event => {
         if (event.key !== 'Enter' && event.key !== ' ') return;
         event.preventDefault();
         onEntryClick(event);
     };
-    const onPanelClick = event => {
+    const onOverlayClick = event => {
+        if (event.target === overlay || event.target.closest('.cv-wand-dialog-close')) {
+            setPanelOpen(false);
+            return;
+        }
         const button = event.target.closest('button[data-cv-wand-action]');
         if (!button || !panel.contains(button)) return;
         event.preventDefault();
         event.stopPropagation();
-        if (busy) return;
-        const action = button.dataset.cvWandAction;
-        setPanelOpen(false);
-        void runAction(action);
-    };
-    const onOutsidePointerDown = event => {
-        if (!entry.contains(event.target) && !panel.contains(event.target)) setPanelOpen(false);
+        if (!busy) void runAction(button.dataset.cvWandAction);
     };
     const onKeyDown = event => {
-        if (event.key === 'Escape' && !panel.hidden) {
+        if (overlay.hidden) return;
+        if (event.key === 'Escape') {
+            event.preventDefault();
+            event.stopPropagation();
             setPanelOpen(false);
-            entry.focus({ preventScroll: true });
+        } else if (event.key === 'Tab') {
+            // 保持键盘焦点停留在模态弹窗中，不让 Tab 移回聊天输入区。
+            const focusables = [closeButton, ...actionButtons.filter(button => !button.disabled)];
+            const first = focusables[0], last = focusables[focusables.length - 1];
+            if (event.shiftKey && document.activeElement === first) {
+                event.preventDefault(); last.focus();
+            } else if (!event.shiftKey && document.activeElement === last) {
+                event.preventDefault(); first.focus();
+            }
         }
     };
 
     entry.addEventListener('click', onEntryClick);
     entry.addEventListener('keydown', onEntryKeyDown);
-    panel.addEventListener('click', onPanelClick);
-    document.addEventListener('pointerdown', onOutsidePointerDown, true);
-    document.addEventListener('keydown', onKeyDown);
+    overlay.addEventListener('click', onOverlayClick);
+    document.addEventListener('keydown', onKeyDown, true);
+    document.body.append(overlay); // 脱离 #extensionsMenu，避免被父级 overflow 裁剪
 
-    // 如果魔法棒菜单尚未加载，等它出现后挂载；挂载成功即停止观察，
-    // 避免监听整个聊天 DOM 造成不必要的性能开销。
+    // 酒馆部分主题会稍晚才生成魔法棒菜单。
     let observer = null;
     if (!document.querySelector('#extensionsMenu')) {
         observer = new MutationObserver(() => {
@@ -5033,13 +5058,12 @@ function installCardVaultWandMenu() {
 
     wandMenuCleanup = () => {
         observer?.disconnect();
-        document.removeEventListener('pointerdown', onOutsidePointerDown, true);
-        document.removeEventListener('keydown', onKeyDown);
+        document.removeEventListener('keydown', onKeyDown, true);
         entry.removeEventListener('click', onEntryClick);
         entry.removeEventListener('keydown', onEntryKeyDown);
-        panel.removeEventListener('click', onPanelClick);
+        overlay.removeEventListener('click', onOverlayClick);
+        overlay.remove();
         entry.remove();
-        panel.remove();
     };
 }
 
@@ -5359,7 +5383,7 @@ async function initialize() {
             void refreshCardListFromServer().catch(error => console.warn('[CardVault] background card-list warmup skipped', error));
             void runImportGuardianSweep({ force: true });
         }
-        console.info(`[CardVault] Full 1.2.8 loaded: ST ${sillyTavernUserHandle} -> ${accountDisplayName(requiredCardVaultAccount())}; transport=${cardVaultTransportMode}`);
+        console.info(`[CardVault] Full 1.2.9 loaded: ST ${sillyTavernUserHandle} -> ${accountDisplayName(requiredCardVaultAccount())}; transport=${cardVaultTransportMode}`);
     } catch (error) {
         initialized = false;
         console.error('[CardVault] Initialization failed', error);
@@ -5376,7 +5400,7 @@ document.addEventListener('keydown', handleEscape);
 
 // Optional compatibility bridge: standalone CardVault can still be opened by an existing VVV shell if present.
 globalThis.VVVUnifiedCardVault = Object.assign(globalThis.VVVUnifiedCardVault || {}, {
-    version: '1.2.8-full',
+    version: '1.2.9-full',
     open: async () => { if (!initialized) await initialize(); return openLibrary(); },
     close: () => closeOverlay(),
     verify: (opts={quiet:true}) => verify(opts),
