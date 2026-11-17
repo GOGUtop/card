@@ -2489,3 +2489,80 @@ body.cv-no-scroll{
   .cv-dedupe-card-row{gap:9px;}
   .cv-dedupe-cover-button{flex-basis:76px;width:76px;height:102px;}
 }
+
+/* CardVault 1.3.3 — card-internal illustrations and image-heavy cards. */
+.cv-header-with-switch #cv_illustration_open{grid-area:illustration;border-color:#5d536f!important;color:#e6d9ff!important;}
+.cv-header-with-switch #cv_illustration_open[hidden]{display:none!important;}
+@media (min-width:1100px){
+  .cv-overlay:not(.cv-mobile-fullscreen) .cv-header-with-switch{
+    grid-template-columns:auto auto minmax(125px,1fr) repeat(8,auto)!important;
+    grid-template-areas:'brand switch search ai retry dedupe illustration manage upload refresh close'!important;
+  }
+}
+@media (min-width:761px) and (max-width:1099px){
+  .cv-overlay:not(.cv-mobile-fullscreen) .cv-header-with-switch{
+    grid-template-columns:auto minmax(100px,1fr) repeat(8,auto)!important;
+    grid-template-areas:'brand search ai retry dedupe illustration manage upload refresh close' 'switch switch switch switch switch switch switch switch switch switch'!important;
+  }
+}
+@media(max-width:760px){
+  .cv-overlay.cv-mobile-fullscreen .cv-header.cv-header-with-switch{
+    grid-template-areas:'brand manage upload refresh close' 'search search search search search' 'switch switch switch switch switch' 'ai ai dedupe dedupe retry' 'illustration illustration illustration illustration illustration'!important;
+  }
+  .cv-overlay.cv-mobile-fullscreen .cv-header.cv-header-with-switch #cv_illustration_open{
+    grid-area:illustration!important;display:flex!important;align-items:center!important;justify-content:center!important;
+    width:100%!important;min-width:0!important;min-height:36px!important;height:36px!important;
+    border-radius:10px!important;gap:7px!important;
+  }
+  .cv-overlay.cv-mobile-fullscreen .cv-header.cv-header-with-switch #cv_illustration_open[hidden]{display:none!important;}
+  .cv-overlay.cv-mobile-fullscreen .cv-header.cv-header-with-switch #cv_illustration_open span{display:inline!important;}
+}
+.cv-illustration-dialog{width:min(1030px,97vw);}
+.cv-illustration-controls{gap:8px;}
+.cv-illustration-filters{display:flex;gap:10px;align-items:center;justify-content:space-between;flex-wrap:wrap;padding:11px 18px;border-bottom:1px solid #444550;background:#30313a;}
+.cv-illustration-tabs{display:flex;gap:5px;flex-wrap:wrap;}
+.cv-illustration-tabs>button{border:1px solid #4c4d5b;background:#3a3b47;color:#c7c7d3;border-radius:8px;padding:7px 11px;font-size:12px;cursor:pointer;}
+.cv-illustration-tabs>button.active{background:#6663a2;color:white;border-color:#9286db;}
+.cv-illustration-filters>input{width:170px;min-width:100px;height:33px;border-radius:8px!important;border:1px solid #535460!important;background:#383945!important;color:#f1f1f6!important;padding:0 9px!important;}
+.cv-illustration-grid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:12px;}
+.cv-illustration-card{min-width:0;overflow:hidden;border:1px solid #4b4b5b;border-radius:12px;background:#31323b;}
+.cv-illustration-card-main{display:flex;gap:13px;padding:12px;align-items:center;min-width:0;}
+.cv-illustration-cover{flex:0 0 112px;width:112px;height:148px;}
+.cv-illustration-card-meta{min-width:0;display:flex;flex-direction:column;align-items:flex-start;gap:7px;flex:1;}
+.cv-illustration-card-meta>b{font-size:13px;color:#f3f1ff;max-width:100%;line-height:1.45;display:-webkit-box;-webkit-box-orient:vertical;-webkit-line-clamp:2;overflow:hidden;overflow-wrap:anywhere;}
+.cv-illustration-card-meta>small{font-size:11px;color:#aaaabb;overflow-wrap:anywhere;}
+.cv-illustration-card-meta>strong{font-size:25px;color:#b9a8ff;line-height:1.1;}
+.cv-illustration-card-meta>strong>span{font-size:11px;font-weight:500;color:#c2bfce;}
+.cv-illustration-tags{display:flex;gap:5px;flex-wrap:wrap;}
+.cv-illustration-tags>span{font-size:10px;color:#ddd8f3;background:#484557;padding:4px 6px;border-radius:6px;}
+.cv-illustration-actions{display:flex;gap:7px;padding:9px 12px 12px;border-top:1px solid #454650;}
+.cv-illustration-actions>.menu_button{flex:1;justify-content:center;}
+.cv-illustration-evidence{padding:12px;border-top:1px solid #515165;background:#2b2c35;}
+.cv-illustration-evidence[hidden]{display:none!important;}
+.cv-illustration-evidence>b{display:block;color:#e7dfff;margin-bottom:5px;}
+.cv-illustration-evidence>small{display:block;color:#b0adbe;font-size:11px;line-height:1.5;margin-bottom:10px;}
+.cv-illustration-evidence-list{display:flex;flex-direction:column;gap:7px;max-height:350px;overflow:auto;}
+.cv-illustration-ref{display:flex;align-items:center;gap:8px;border:1px solid #454655;border-radius:8px;padding:8px;background:#343540;min-width:0;}
+.cv-illustration-ref-kind{flex:none;color:#c9baff;font-size:10px;background:#49425e;border-radius:6px;padding:4px 6px;}
+.cv-illustration-ref>div{display:flex;flex:1;flex-direction:column;gap:4px;min-width:0;}
+.cv-illustration-ref>div>b{color:#eeeaf8;font-size:11px;overflow-wrap:anywhere;}
+.cv-illustration-ref>div>small{font-size:10px;color:#adaabb;overflow-wrap:anywhere;word-break:break-all;}
+.cv-illustration-ref>.menu_button{flex:none;font-size:10px!important;padding:5px 7px!important;min-height:27px!important;text-decoration:none!important;}
+@media(max-width:800px){
+  .cv-illustration-grid{grid-template-columns:1fr;}
+  .cv-illustration-card-main{gap:10px;}
+  .cv-illustration-cover{flex-basis:94px;width:94px;height:125px;}
+}
+@media(max-width:520px){
+  .cv-illustration-filters{padding:9px 10px;gap:8px;}
+  .cv-illustration-tabs{width:100%;display:grid;grid-template-columns:repeat(2,minmax(0,1fr));}
+  .cv-illustration-tabs>button{padding:7px 4px;font-size:11px;}
+  .cv-illustration-filters>input{width:100%;}
+  .cv-illustration-controls>label{display:block;}
+  .cv-illustration-card-main{padding:9px;}
+  .cv-illustration-cover{flex-basis:80px;width:80px;height:110px;}
+  .cv-illustration-card-meta>strong{font-size:20px;}
+  .cv-illustration-actions{padding:8px;}
+  .cv-illustration-actions>.menu_button{padding:6px!important;font-size:11px!important;}
+  .cv-illustration-ref{flex-wrap:wrap;}
+}

@@ -1127,7 +1127,7 @@ function installInteractiveCardFallbacks() {
     }
 
     globalThis.cardVaultSeikanFallback = {
-        version: '1.3.2-full',
+        version: '1.3.3-full',
         rescan: () => rescanSeikanInteractiveRoots(document, { deepShadowScan: true }),
         send: role => sendSeikanRoleChoice(role),
         testOwner: () => sendSeikanRoleChoice('owner'),
@@ -1516,6 +1516,7 @@ function attachMobileViewport(overlay) {
 }
 
 function closeOverlay() {
+    cvIllustrationClose();
     cvDedupeClose();
     overlayAbortController?.abort();
     overlayAbortController = null;
@@ -1716,6 +1717,7 @@ function createOverlay(mode = 'cards', options = {}) {
           <button id="cv_ai_classify" class="menu_button cv-ai-classify-button" type="button" title="只分类新增 / 未分类角色卡；已分类卡不会重复调用"><i class="fa-solid fa-wand-magic-sparkles"></i><span>AI分类</span></button>
           <button id="cv_ai_retry_failed" class="menu_button cv-ai-retry-button" type="button" hidden title="只重新尝试上一次失败的角色卡"><i class="fa-solid fa-rotate-right"></i><span>重试失败</span></button>
           <button id="cv_dedupe_open" class="menu_button cv-dedupe-open" type="button" title="比较角色卡内部内容，找出疑似重复和更新版本"><i class="fa-solid fa-clone"></i><span>内容查重</span></button>
+          <button id="cv_illustration_open" class="menu_button cv-illustration-open" type="button" title="检索卡片内的图片、附件及重图角色卡"><i class="fa-solid fa-images"></i><span>插图检索</span></button>
           <button id="cv_library_manage" class="menu_button cv-manage-button" type="button" title="批量管理"><i class="fa-solid fa-list-check"></i><span>批量管理</span></button>
           <button id="cv_library_upload" class="menu_button" type="button"><i class="fa-solid fa-cloud-arrow-up"></i><span>上传</span></button>
           <button id="cv_library_refresh" class="menu_button" type="button" title="刷新"><i class="fa-solid fa-rotate"></i></button>
@@ -1748,6 +1750,7 @@ function createOverlay(mode = 'cards', options = {}) {
     overlay.querySelector('#cv_ai_classify').addEventListener('click', () => runAiClassification().catch(error => notify('error', error.message)));
     overlay.querySelector('#cv_ai_retry_failed').addEventListener('click', () => runAiClassification({ onlyFailed: true }).catch(error => notify('error', error.message)));
     overlay.querySelector('#cv_dedupe_open').addEventListener('click', cvDedupeOpen);
+    overlay.querySelector('#cv_illustration_open').addEventListener('click', cvIllustrationOpen);
     overlay.querySelector('#cv_library_manage').addEventListener('click', () => setSelectionMode(!selectionMode));
     overlay.querySelector('#cv_select_all').addEventListener('click', selectAllVisible);
     overlay.querySelector('#cv_invert_selection').addEventListener('click', invertVisibleSelection);
@@ -1781,11 +1784,13 @@ function paintLibraryMode() {
     const manage = overlay.querySelector('#cv_library_manage');
     const upload = overlay.querySelector('#cv_library_upload');
     const dedupe = overlay.querySelector('#cv_dedupe_open');
+    const illustration = overlay.querySelector('#cv_illustration_open');
     const aiClassify = overlay.querySelector('#cv_ai_classify');
     const aiRetry = overlay.querySelector('#cv_ai_retry_failed');
     if (search) search.placeholder = currentLibraryMode === 'play' ? '搜索游玩备份' : '搜索角色、作者或标签';
     if (manage) manage.hidden = false;
     if (dedupe) dedupe.hidden = currentLibraryMode !== 'cards';
+    if (illustration) illustration.hidden = currentLibraryMode !== 'cards';
     if (upload) upload.hidden = currentLibraryMode !== 'cards';
     if (aiClassify) {
         aiClassify.hidden = currentLibraryMode !== 'cards';
@@ -2123,6 +2128,462 @@ async function openLibrary() {
     await loadCards('');
 }
 
+// CardVault 1.3.3 — Find character cards with in-card illustrations.
+// Scan the card content and image attachments, NOT the normal card cover.
+const CV_ILLUSTRATION_CACHE_VERSION = 1;
+const CV_ILLUSTRATION_IMAGE_EXT = /\.(?:png|jpe?g|webp|gif|avif|apng|bmp|svg|jfif)(?:[?#]|$)/i;
+const CV_ILLUSTRATION_DATA_PREFIX = /^data:image\/(?:png|jpeg|jpg|gif|webp|avif|svg\+xml|bmp|apng);base64,/i;
+let cvIllustrationEntries = null;
+let cvIllustrationSnapshot = '';
+let cvIllustrationScan = null;
+let cvIllustrationFailures = [];
+let cvIllustrationPreviewUrl = null;
+
+function cvIllustrationSafeLink(value) {
+    try {
+        const url = new URL(String(value || ''));
+        return url.protocol === 'https:' || url.protocol === 'http:' ? url.href : '';
+    } catch { return ''; }
+}
+
+function cvIllustrationImageLike(value) {
+    const raw = String(value || '').trim();
+    return CV_ILLUSTRATION_DATA_PREFIX.test(raw)
+        || CV_ILLUSTRATION_IMAGE_EXT.test(raw)
+        || /^https?:\/\/[^\s]+(?:\/images?\/|[?&](?:format|fm|ext|type)=image)/i.test(raw);
+}
+
+function cvIllustrationAnalyzeCard(card, summary, keepEmbeddedPayload = false) {
+    const data = valueFromCard(card);
+    const seen = new Map();
+    const counts = { attachment: 0, embedded: 0, linked: 0, local: 0, dynamic: 0 };
+    const add = (raw, source, explicit = false, attachment = false) => {
+        let value = String(raw || '').trim().replace(/^['"`<\s]+|['"`>\s]+$/g, '')
+            .replace(/&amp;/gi, '&').replace(/&quot;/gi, '"');
+        if (!value || /^javascript:/i.test(value)) return;
+        let kind = '';
+        if (attachment) kind = 'attachment';
+        else if (CV_ILLUSTRATION_DATA_PREFIX.test(value)) kind = 'embedded';
+        else if (/^https?:\/\//i.test(value)) kind = 'linked';
+        else if (/\{\{|\$\{|<%/.test(value)) kind = 'dynamic';
+        else if (explicit || cvIllustrationImageLike(value)) kind = 'local';
+        if (!kind || (!explicit && !attachment && !cvIllustrationImageLike(value))) return;
+        // External URLs are kept as references only; the scanner never downloads them.
+        if (kind === 'linked' && !cvIllustrationSafeLink(value)) return;
+        const key = kind === 'embedded'
+            ? `embedded:${value.length}:${cvDedupeHash(value.slice(0, 512))}:${cvDedupeHash(value.slice(-512))}`
+            : kind === 'linked' ? `url:${value.replace(/#.*$/, '')}`
+            : kind === 'dynamic' ? `dynamic:${value}`
+            : `path:${value.replace(/^\.\//, '')}`;
+        const existing = seen.get(key);
+        if (existing) {
+            if (attachment && existing.kind === 'local') {
+                counts.local--; counts.attachment++; existing.kind = 'attachment'; existing.value = value;
+            }
+            if (!existing.sources.includes(source) && existing.sources.length < 4) existing.sources.push(source);
+            return;
+        }
+        const display = kind === 'embedded' ? `内嵌 Base64 图片（约 ${Math.round(value.length * 0.75 / 1024)} KB）`
+            : value.length > 170 ? `${value.slice(0, 145)}…${value.slice(-20)}` : value;
+        const record = { kind, display, value: kind === 'embedded' && !keepEmbeddedPayload ? '' : value, sources: [source] };
+        seen.set(key, record);
+        counts[kind]++;
+    };
+    const scanText = (value, source) => {
+        if (typeof value !== 'string' || !value) return;
+        const text = value;
+        // HTML <img src>, SVG <image href>, and <source srcset> (first URL only).
+        const html = /<(?:img|image|source)\b[^>]*?\b(?:src|href|srcset)\s*=\s*(?:"([^"]+)"|'([^']+)'|([^\s>]+))/gi;
+        for (const match of text.matchAll(html)) {
+            const src = (match[1] || match[2] || match[3] || '').split(/\s*,\s*(?=https?:|\/|data:)/)[0].trim().split(/\s+\d+(?:\.\d+)?[wx]$/)[0];
+            if (/^<source\b/i.test(match[0]) && !cvIllustrationImageLike(src)) continue;
+            add(src, source, true);
+        }
+        // Responsive srcset can contain several actual images.
+        const srcsets = /<(?:img|source)\b[^>]*?\bsrcset\s*=\s*(?:"([^"]+)"|'([^']+)')/gi;
+        for (const match of text.matchAll(srcsets)) {
+            for (const part of (match[1] || match[2] || '').split(/\s*,\s*(?=https?:|\/)/)) {
+                const src = part.trim().replace(/\s+\d+(?:\.\d+)?[wx]$/, '');
+                if (src) add(src, source, true);
+            }
+        }
+        // Markdown ![caption](image.png), including optional quoted title.
+        const markdown = /!\[[^\]]*\]\(\s*(?:<([^>]+)>|([^\s)]+))/gi;
+        for (const match of text.matchAll(markdown)) add(match[1] || match[2], source, true);
+        // CSS url(...), used by visual frontends for backgrounds.
+        const css = /\burl\(\s*(?:"([^"]+)"|'([^']+)'|([^\s)]+))\s*\)/gi;
+        for (const match of text.matchAll(css)) {
+            const src = match[1] || match[2] || match[3];
+            if (cvIllustrationImageLike(src) || /\{\{|\$\{/.test(src)) add(src, source, true);
+        }
+        // Bare direct image URLs, common in worldbooks, scripts, and descriptions.
+        const links = /https?:\/\/[^\s"'<>`\\\])}]+/gi;
+        for (const match of text.matchAll(links)) {
+            const candidate = match[0].replace(/[.,;:!?，。；：！？]+$/, '');
+            if (cvIllustrationImageLike(candidate)) add(candidate, source);
+        }
+        // Base64 data URIs not wrapped in HTML or CSS.
+        const embedded = /data:image\/(?:png|jpeg|jpg|gif|webp|avif|svg\+xml|bmp|apng);base64,[a-z\d+/=\r\n]+/gi;
+        for (const match of text.matchAll(embedded)) add(match[0], source, true);
+    };
+    const scanNested = (node, source, depth = 0, visited = new WeakSet()) => {
+        if (depth > 7 || node == null) return;
+        if (typeof node === 'string') { scanText(node, source); return; }
+        if (typeof node !== 'object' || visited.has(node)) return;
+        visited.add(node);
+        if (Array.isArray(node)) {
+            for (let i = 0; i < Math.min(node.length, 1000); i++) scanNested(node[i], `${source} ${i + 1}`, depth + 1, visited);
+            return;
+        }
+        // CardV3 assets can contain non-extension URLs and typed image resources.
+        const type = String(node.type || node.mime || node.contentType || '').toLowerCase();
+        // CardV3 icon assets usually represent the main character portrait.
+        if (type === 'icon') return;
+        const uri = node.uri || node.url || node.src || node.path;
+        if (uri && (/^image\//.test(type) || /^(?:background|emotion|illustration|image|other)$/.test(type))) {
+            add(uri, source, true);
+        }
+        let traversed = 0;
+        for (const [key, value] of Object.entries(node)) {
+            if (++traversed > 1200) break;
+            // Exclude the standard character portrait/cover; it is not an in-card illustration.
+            if (/^(?:avatar|cover|thumbnail|portrait|card_image|chara_card|icon)$/i.test(key)) continue;
+            if (typeof value === 'string') scanText(value, `${source} · ${key}`);
+            else scanNested(value, `${source} · ${key}`, depth + 1, visited);
+        }
+    };
+    const fields = [
+        ['角色描述', data.description], ['性格', data.personality], ['场景', data.scenario],
+        ['开场白', data.first_mes], ['示例对话', data.mes_example], ['创作者备注', data.creator_notes],
+        ['系统提示', data.system_prompt], ['历史指令', data.post_history_instructions],
+    ];
+    for (const [name, text] of fields) scanText(text, name);
+    scanNested(data.alternate_greetings, '备选开场白');
+    scanNested(data.group_only_greetings, '群聊开场白');
+    scanNested(card.worldbook || data.character_book, '世界书');
+    scanNested(card.regex, '正则脚本');
+    scanNested(data.extensions, '卡片扩展');
+    scanNested(data.assets, '卡片资源');
+    scanNested(card.assets, '附属资源');
+    for (const item of Array.isArray(card.attachments) ? card.attachments : []) {
+        const name = String(item?.name || item?.filename || '').trim();
+        const mime = String(item?.mime || item?.mimeType || item?.contentType || '').toLowerCase();
+        if (!name || /^(?:avatar|cover|thumbnail|portrait)(?:[._-]|\.)/i.test(name)) continue;
+        if (CV_ILLUSTRATION_IMAGE_EXT.test(name) || mime.startsWith('image/')) add(name, '图片附件', true, true);
+    }
+    const references = [...seen.values()];
+    return {
+        id: String(summary.id), key: cvDedupeSummaryKey(summary), count: references.length,
+        counts, references,
+    };
+}
+
+function cvIllustrationCacheKey() {
+    return `cardvault_illustrations_v${CV_ILLUSTRATION_CACHE_VERSION}:${requiredCardVaultAccount()}`;
+}
+function cvIllustrationReadCache() {
+    try {
+        const payload = JSON.parse(localStorage.getItem(cvIllustrationCacheKey()) || 'null');
+        if (payload?.version !== CV_ILLUSTRATION_CACHE_VERSION || !Array.isArray(payload?.entries)) return new Map();
+        return new Map(payload.entries.filter(entry => entry?.id && entry?.counts)
+            .map(entry => [String(entry.id), { ...entry, references: null }]));
+    } catch { return new Map(); }
+}
+function cvIllustrationWriteCache(entries, summaries) {
+    try {
+        const active = new Set(summaries.map(item => String(item.id)));
+        // Store ONLY counts and source types. Never persist URLs, Base64 image data, or card text.
+        const compact = [...entries.values()].filter(entry => active.has(entry.id))
+            .map(({ id, key, count, counts }) => ({ id, key, count, counts }));
+        localStorage.setItem(cvIllustrationCacheKey(), JSON.stringify({ version: CV_ILLUSTRATION_CACHE_VERSION, entries: compact }));
+    } catch (error) { console.warn('[CardVault] 插图检索缓存保存失败', error); }
+}
+function cvIllustrationClosePreview() {
+    cvDedupeCloseZoom();
+    if (cvIllustrationPreviewUrl) { URL.revokeObjectURL(cvIllustrationPreviewUrl); cvIllustrationPreviewUrl = null; }
+}
+function cvIllustrationClose() {
+    cvIllustrationScan?.controller?.abort();
+    cvDedupeStopCoverObserver();
+    cvIllustrationClosePreview();
+    document.querySelector('.cv-illustration-layer')?.remove();
+}
+function cvIllustrationThreshold() {
+    return Math.max(3, Math.min(100, Number(document.querySelector('#cv_illustration_heavy')?.value) || 8));
+}
+function cvIllustrationSetStatus(message, progress = null) {
+    const layer = document.querySelector('.cv-illustration-layer');
+    if (!layer) return;
+    const status = layer.querySelector('#cv_illustration_status');
+    if (status) status.textContent = message;
+    const bar = layer.querySelector('#cv_illustration_progress');
+    if (bar && progress !== null) bar.value = Math.max(0, Math.min(1, progress));
+}
+function cvIllustrationOpen() {
+    if (currentLibraryMode !== 'cards') return;
+    cvDedupeClose();
+    cvIllustrationClose();
+    const layer = document.createElement('div');
+    layer.className = 'cv-dedupe-layer cv-illustration-layer';
+    layer.innerHTML = `
+      <section class="cv-dedupe-dialog cv-illustration-dialog" role="dialog" aria-modal="true" aria-label="角色卡插图检索">
+        <header class="cv-dedupe-header">
+          <div class="cv-dedupe-icon"><i class="fa-solid fa-images"></i></div>
+          <div class="cv-dedupe-heading"><b>角色卡插图检索</b><small>寻找卡内自带图片、世界书/开场白图片引用和多图重图卡；不把普通角色封面算进去</small></div>
+          <button id="cv_illustration_close" class="menu_button cv-dedupe-x" type="button" aria-label="关闭插图检索"><i class="fa-solid fa-xmark"></i></button>
+        </header>
+        <div class="cv-dedupe-controls cv-illustration-controls">
+          <button id="cv_illustration_start" class="menu_button cv-primary" type="button"><i class="fa-solid fa-magnifying-glass"></i> 扫描全部角色卡</button>
+          <button id="cv_illustration_force" class="menu_button" type="button" title="不使用本地缓存，重新读取卡片内部内容"><i class="fa-solid fa-rotate"></i> 重新读取</button>
+          <button id="cv_illustration_cancel" class="menu_button" type="button" hidden>停止</button>
+          <label for="cv_illustration_heavy">重图标准</label>
+          <select id="cv_illustration_heavy" class="text_pole" aria-label="重图数量标准">
+            <option value="5">≥5 张</option><option value="8" selected>≥8 张</option><option value="12">≥12 张</option><option value="20">≥20 张</option>
+          </select>
+        </div>
+        <div class="cv-dedupe-progress-box"><div id="cv_illustration_status" role="status">仅检测卡内图片线索，不调用 AI，也不会修改角色卡。首次扫描需要读取云端卡片详情。</div><progress id="cv_illustration_progress" value="0" max="1"></progress></div>
+        <div class="cv-illustration-filters">
+          <div class="cv-illustration-tabs" role="group" aria-label="筛选插图数量">
+            <button class="active" type="button" data-cv-illustration-filter="all">全部带图</button>
+            <button type="button" data-cv-illustration-filter="multi">多图 ≥3</button>
+            <button type="button" data-cv-illustration-filter="heavy">重图</button>
+            <button type="button" data-cv-illustration-filter="embedded">内置/附件</button>
+            <button type="button" data-cv-illustration-filter="attachment">图片附件</button>
+          </div>
+          <input id="cv_illustration_search" class="text_pole" placeholder="筛选角色名或作者" aria-label="筛选角色名或作者">
+        </div>
+        <div id="cv_illustration_results" class="cv-dedupe-results cv-illustration-results"><div class="cv-dedupe-empty"><i class="fa-solid fa-images"></i><b>快速找出自带插图的角色卡</b><span>点击「扫描全部角色卡」，识别开场白、世界书、正则/前端脚本里的图片，以及卡片携带的图片附件。普通封面不计入。</span></div></div>
+        <footer class="cv-dedupe-footer"><i class="fa-solid fa-circle-info"></i> 外链/动态引用是“图片线索”，不保证链接仍有效或能在酒馆显示；只读扫描，不会自动下载外链图片，也不会删除或更改卡片。</footer>
+      </section>`;
+    document.querySelector('.cv-overlay')?.append(layer);
+    layer.addEventListener('mousedown', event => { if (event.target === layer) cvIllustrationClose(); });
+    layer.querySelector('#cv_illustration_close').addEventListener('click', cvIllustrationClose);
+    layer.querySelector('#cv_illustration_start').addEventListener('click', () => cvIllustrationRun(false).catch(error => notify('error', `插图检索失败：${error.message}`)));
+    layer.querySelector('#cv_illustration_force').addEventListener('click', () => cvIllustrationRun(true).catch(error => notify('error', `插图检索失败：${error.message}`)));
+    layer.querySelector('#cv_illustration_cancel').addEventListener('click', () => cvIllustrationScan?.controller?.abort());
+    layer.querySelector('#cv_illustration_heavy').addEventListener('change', () => cvIllustrationRender());
+    layer.querySelector('#cv_illustration_search').addEventListener('input', () => cvIllustrationRender());
+    layer.querySelectorAll('[data-cv-illustration-filter]').forEach(button => button.addEventListener('click', () => {
+        layer.querySelectorAll('[data-cv-illustration-filter]').forEach(item => item.classList.toggle('active', item === button));
+        cvIllustrationRender();
+    }));
+    layer.querySelector('#cv_illustration_results').addEventListener('click', event => {
+        const zoom = event.target.closest('[data-cv-dedupe-zoom]');
+        if (zoom) { cvDedupeOpenZoom(zoom, '.cv-illustration-layer'); return; }
+        const evidence = event.target.closest('[data-cv-illustration-evidence]');
+        if (evidence) { void cvIllustrationToggleEvidence(evidence); return; }
+        const preview = event.target.closest('[data-cv-illustration-preview]');
+        if (preview) { void cvIllustrationPreviewImage(preview); return; }
+        const detail = event.target.closest('[data-cv-illustration-open]');
+        if (detail) {
+            const id = detail.dataset.cvIllustrationOpen;
+            cvIllustrationClose();
+            showDetail(id, captureLibraryPosition(id)).catch(error => notify('error', error.message));
+        }
+    });
+    if (cvIllustrationEntries && cvIllustrationSnapshot === cardListFingerprint(loadedCards)) {
+        cvIllustrationSetStatus(`已有本次会话的扫描结果 · ${cvIllustrationEntries.size} 张`, 1);
+        cvIllustrationRender();
+    }
+}
+function cvIllustrationCardHtml(card, entry) {
+    const id = escapeHtml(String(card.id));
+    const count = entry.count || 0;
+    const tags = [
+        entry.counts.attachment ? `附件 ${entry.counts.attachment}` : '',
+        entry.counts.embedded ? `内嵌 ${entry.counts.embedded}` : '',
+        entry.counts.linked ? `外链 ${entry.counts.linked}` : '',
+        entry.counts.local ? `路径 ${entry.counts.local}` : '',
+        entry.counts.dynamic ? `动态 ${entry.counts.dynamic}` : '',
+    ].filter(Boolean);
+    return `<article class="cv-illustration-card" data-cv-illustration-id="${id}">
+        <div class="cv-illustration-card-main">
+          <button type="button" class="cv-dedupe-cover-button cv-illustration-cover" data-cv-dedupe-zoom="${id}" data-cv-dedupe-name="${escapeHtml(card.name || '未命名角色')}" title="点击放大角色封面（封面不计入插图数量）" aria-label="放大角色封面">
+            <img alt="${escapeHtml(card.name || '未命名角色')} 的真实封面" loading="lazy" decoding="async" data-cv-dedupe-cover-id="${id}"><span class="cv-dedupe-cover-placeholder"><i class="fa-solid fa-image"></i></span><span class="cv-dedupe-cover-magnify"><i class="fa-solid fa-magnifying-glass-plus"></i></span>
+          </button>
+          <div class="cv-illustration-card-meta"><b title="${escapeHtml(card.name || '')}">${escapeHtml(card.name || '未命名角色')}</b>
+            <small>${escapeHtml(card.creator || '未知作者')} · 云端版本 ${escapeHtml(String(card.currentVersion || 1))}</small>
+            <strong>${count} <span>条不同图片线索</span></strong>
+            <div class="cv-illustration-tags">${tags.map(tag => `<span>${escapeHtml(tag)}</span>`).join('')}</div>
+          </div>
+        </div>
+        <div class="cv-illustration-actions"><button type="button" class="menu_button" data-cv-illustration-evidence="${id}"><i class="fa-solid fa-list"></i> 查看图片线索</button><button type="button" class="menu_button" data-cv-illustration-open="${id}"><i class="fa-solid fa-arrow-up-right-from-square"></i> 角色详情</button></div>
+        <div class="cv-illustration-evidence" hidden></div>
+      </article>`;
+}
+function cvIllustrationRender() {
+    const target = document.querySelector('#cv_illustration_results');
+    if (!target || !cvIllustrationEntries) return;
+    cvDedupeStopCoverObserver();
+    const filter = document.querySelector('[data-cv-illustration-filter].active')?.dataset.cvIllustrationFilter || 'all';
+    const heavy = cvIllustrationThreshold();
+    const search = String(document.querySelector('#cv_illustration_search')?.value || '').trim().toLowerCase();
+    const candidates = loadedCards.map(card => ({ card, entry: cvIllustrationEntries.get(String(card.id)) }))
+        .filter(({ card, entry }) => entry?.count > 0 && (!search || `${card.name || ''} ${card.creator || ''}`.toLowerCase().includes(search)));
+    const matches = candidates.filter(({ entry }) => filter === 'multi' ? entry.count >= 3
+        : filter === 'heavy' ? entry.count >= heavy
+        : filter === 'embedded' ? (entry.counts.attachment + entry.counts.embedded) > 0
+        : filter === 'attachment' ? entry.counts.attachment > 0 : true)
+        .sort((a, b) => b.entry.count - a.entry.count || String(a.card.name || '').localeCompare(String(b.card.name || '')));
+    const total = [...cvIllustrationEntries.values()].filter(item => item.count > 0).length;
+    if (!matches.length) {
+        target.innerHTML = `<div class="cv-dedupe-empty"><i class="fa-solid fa-image"></i><b>当前条件没有匹配角色卡</b><span>已扫描 ${cvIllustrationEntries.size} 张，发现 ${total} 张有图片线索。可尝试切换筛选，或点「重新读取」。</span></div>`;
+        return;
+    }
+    target.innerHTML = `<div class="cv-dedupe-summary"><b>符合条件 ${matches.length} 张 · 卡库共发现 ${total} 张带图角色卡</b><span>按图片线索数量从多到少排列 · ${cvIllustrationFailures.length} 张读取失败</span></div><div class="cv-illustration-grid"></div>`;
+    const grid = target.querySelector('.cv-illustration-grid');
+    let shown = 0;
+    const append = () => {
+        const batch = matches.slice(shown, shown + 24);
+        shown += batch.length;
+        grid.insertAdjacentHTML('beforeend', batch.map(({ card, entry }) => cvIllustrationCardHtml(card, entry)).join(''));
+        target.querySelector('#cv_illustration_more')?.remove();
+        if (shown < matches.length) {
+            const more = document.createElement('button');
+            more.id = 'cv_illustration_more'; more.className = 'menu_button cv-dedupe-more';
+            more.textContent = `显示更多（还有 ${matches.length - shown} 张）`;
+            more.addEventListener('click', append);
+            target.append(more);
+        }
+        cvDedupeObserveCovers(target);
+    };
+    append();
+}
+async function cvIllustrationToggleEvidence(button) {
+    const id = button.dataset.cvIllustrationEvidence;
+    const cardNode = button.closest('.cv-illustration-card');
+    const panel = cardNode?.querySelector('.cv-illustration-evidence');
+    if (!panel) return;
+    if (!panel.hidden) { panel.hidden = true; button.innerHTML = '<i class="fa-solid fa-list"></i> 查看图片线索'; return; }
+    panel.hidden = false;
+    button.innerHTML = '<i class="fa-solid fa-chevron-up"></i> 收起线索';
+    let entry = cvIllustrationEntries?.get(id);
+    if (!entry?.references) {
+        panel.textContent = '正在读取图片线索…';
+        try {
+            const detail = await apiFetch(`/api/cards/${encodeURIComponent(id)}`, { signal: overlayAbortController?.signal, timeoutMs: 45000 });
+            if (!panel.isConnected) return;
+            const summary = loadedCards.find(item => String(item.id) === id) || { id };
+            entry = cvIllustrationAnalyzeCard(detail, summary);
+            cvIllustrationEntries.set(id, entry);
+        } catch (error) { panel.textContent = `读取失败：${error.message}`; return; }
+    }
+    const labels = { attachment: '图片附件', embedded: '内嵌图片', linked: '外链图片', local: '本地图片路径', dynamic: '动态图片引用' };
+    const refs = entry.references || [];
+    panel.innerHTML = `<b>找到 ${entry.count} 条不同图片线索</b><small>同一张图片在多处引用只计算一次；外链是否有效需自行确认。</small>
+      <div class="cv-illustration-evidence-list">${refs.slice(0, 40).map((ref, index) => {
+        const canPreview = ref.kind === 'attachment' || ref.kind === 'embedded';
+        const link = ref.kind === 'linked' ? cvIllustrationSafeLink(ref.value) : '';
+        return `<div class="cv-illustration-ref"><span class="cv-illustration-ref-kind">${labels[ref.kind] || '图片'}</span>
+          <div><b>${escapeHtml(ref.sources.join(' / '))}</b><small title="${escapeHtml(ref.display)}">${escapeHtml(ref.display)}</small></div>
+          ${canPreview ? `<button class="menu_button" type="button" data-cv-illustration-preview="${index}" data-cv-illustration-card="${escapeHtml(id)}">预览</button>` : link ? `<a class="menu_button" target="_blank" rel="noopener noreferrer" href="${escapeHtml(link)}">查看链接</a>` : ''}
+        </div>`;
+      }).join('')}</div>${refs.length > 40 ? `<small>还有 ${refs.length - 40} 条线索未展开，可进入角色详情查看。</small>` : ''}`;
+}
+async function cvIllustrationPreviewImage(button) {
+    const id = String(button.dataset.cvIllustrationCard || '');
+    const index = Number(button.dataset.cvIllustrationPreview);
+    const ref = cvIllustrationEntries?.get(id)?.references?.[index];
+    if (!ref || !['attachment', 'embedded'].includes(ref.kind)) return;
+    cvIllustrationClosePreview();
+    const layer = document.querySelector('.cv-illustration-layer');
+    if (!layer) return;
+    const zoom = document.createElement('div');
+    zoom.className = 'cv-dedupe-zoom';
+    zoom.setAttribute('role', 'dialog'); zoom.setAttribute('aria-modal', 'true');
+    zoom.innerHTML = `<div class="cv-dedupe-zoom-panel"><div class="cv-dedupe-zoom-header"><b>${escapeHtml(ref.display)}</b><button type="button" class="menu_button cv-dedupe-zoom-close" aria-label="关闭图片预览"><i class="fa-solid fa-xmark"></i></button></div><div class="cv-dedupe-zoom-body"><img alt="图片附件预览" decoding="async"><span class="cv-dedupe-zoom-loading">正在加载图片…</span></div></div>`;
+    layer.append(zoom);
+    zoom.addEventListener('mousedown', event => { if (event.target === zoom) cvIllustrationClosePreview(); });
+    zoom.querySelector('.cv-dedupe-zoom-close').addEventListener('click', cvIllustrationClosePreview);
+    const img = zoom.querySelector('img');
+    try {
+        if (ref.kind === 'embedded') {
+            // Do not retain large Base64 payloads in the full scan result.
+            // Fetch just this card when the user explicitly requests a preview.
+            const detail = await apiFetch(`/api/cards/${encodeURIComponent(id)}`, { signal: overlayAbortController?.signal, timeoutMs: 45000 });
+            const summary = loadedCards.find(item => String(item.id) === id) || { id };
+            const live = cvIllustrationAnalyzeCard(detail, summary, true).references[index];
+            if (!live || live.kind !== 'embedded' || !live.value) throw new Error('找不到这张内嵌图片');
+            if (live.value.length > 16_000_000) throw new Error('图片过大，无法在弹窗中预览');
+            if (!zoom.isConnected) return;
+            img.src = live.value;
+        } else {
+            const response = await apiFetch(`/api/cards/${encodeURIComponent(id)}/attachments/${encodeURIComponent(ref.value)}`, { raw: true, signal: overlayAbortController?.signal, timeoutMs: 60000 });
+            const blob = await response.blob();
+            if (blob.size > 20 * 1024 * 1024) throw new Error('图片附件超过 20MB，建议在角色详情中下载');
+            if (!zoom.isConnected) return;
+            const extension = (ref.value.match(/\.([a-z\d]+)(?:$|[?#])/i)?.[1] || 'png').toLowerCase();
+            const mime = { jpg:'image/jpeg', jpeg:'image/jpeg', png:'image/png', gif:'image/gif', webp:'image/webp', avif:'image/avif', svg:'image/svg+xml', bmp:'image/bmp', apng:'image/apng' }[extension] || 'image/png';
+            cvIllustrationPreviewUrl = URL.createObjectURL(blob.type.startsWith('image/') ? blob : new Blob([blob], { type: mime }));
+            img.src = cvIllustrationPreviewUrl;
+        }
+        img.onload = () => { if (zoom.isConnected) img.classList.add('loaded'); };
+        img.onerror = () => { if (zoom.isConnected) zoom.querySelector('.cv-dedupe-zoom-loading').textContent = '图片无法预览'; };
+    } catch (error) {
+        if (zoom.isConnected) zoom.querySelector('.cv-dedupe-zoom-loading').textContent = `预览失败：${error.message}`;
+    }
+}
+async function cvIllustrationRun(force = false) {
+    if (cvIllustrationScan) return;
+    const layer = document.querySelector('.cv-illustration-layer');
+    if (!layer) return;
+    const summaries = [...loadedCards];
+    if (!summaries.length) { cvIllustrationSetStatus('卡库角色卡尚未加载完成，请稍后再试。'); return; }
+    const controller = new AbortController();
+    const scan = { controller }; cvIllustrationScan = scan;
+    cvIllustrationEntries = null; cvIllustrationFailures = [];
+    const start = layer.querySelector('#cv_illustration_start');
+    const forceButton = layer.querySelector('#cv_illustration_force');
+    const cancel = layer.querySelector('#cv_illustration_cancel');
+    start.disabled = forceButton.disabled = true; cancel.hidden = false;
+    cvDedupeStopCoverObserver();
+    layer.querySelector('#cv_illustration_results').innerHTML = '<div class="cv-dedupe-empty"><i class="fa-solid fa-spinner fa-spin"></i><b>正在扫描角色卡里的插图</b><span>只读取卡片详情和图片附件列表，不下载外链图片；随时可以停止。</span></div>';
+    const cache = force ? new Map() : cvIllustrationReadCache();
+    const entries = new Map();
+    let cursor = 0, done = 0, cached = 0, fetched = 0;
+    const update = () => cvIllustrationSetStatus(`已扫描 ${done}/${summaries.length} · 缓存 ${cached} · 云端读取 ${fetched} · 失败 ${cvIllustrationFailures.length}`, done / summaries.length);
+    update();
+    const worker = async () => {
+        while (!controller.signal.aborted) {
+            const index = cursor++;
+            if (index >= summaries.length) break;
+            const summary = summaries[index]; const id = String(summary.id);
+            try {
+                const previous = cache.get(id);
+                if (previous && previous.key === cvDedupeSummaryKey(summary)) {
+                    entries.set(id, previous); cached++;
+                } else {
+                    const detail = await apiFetch(`/api/cards/${encodeURIComponent(id)}`, { signal: controller.signal, timeoutMs: 45000 });
+                    if (controller.signal.aborted) break;
+                    entries.set(id, cvIllustrationAnalyzeCard(detail, summary)); fetched++;
+                }
+            } catch (error) {
+                if (controller.signal.aborted) break;
+                cvIllustrationFailures.push({ id, name: summary.name || '', message: String(error?.message || error) });
+            }
+            done++;
+            if (done % 5 === 0 || done === summaries.length) update();
+        }
+    };
+    try {
+        await Promise.all(Array.from({ length: Math.min(4, summaries.length) }, worker));
+        cvIllustrationWriteCache(entries, summaries);
+        if (controller.signal.aborted) {
+            cvIllustrationSetStatus(`已停止扫描 · ${done}/${summaries.length}，已完成结果已缓存`, done / summaries.length);
+            layer.querySelector('#cv_illustration_results').innerHTML = '<div class="cv-dedupe-empty"><b>扫描已停止</b><span>重新点击扫描即可复用已缓存结果。</span></div>';
+            return;
+        }
+        cvIllustrationEntries = entries;
+        cvIllustrationSnapshot = cardListFingerprint(summaries);
+        const found = [...entries.values()].filter(entry => entry.count > 0).length;
+        cvIllustrationSetStatus(`扫描完成 · ${summaries.length} 张中找到 ${found} 张带图片线索的角色卡 · 读取失败 ${cvIllustrationFailures.length} 张`, 1);
+        cvIllustrationRender();
+    } finally {
+        if (cvIllustrationScan === scan) cvIllustrationScan = null;
+        if (start.isConnected) { start.disabled = false; forceButton.disabled = false; cancel.hidden = true; }
+    }
+}
+
 // CardVault 1.3.0 — local content similarity / version duplicate finder.
 // Reads card details only. Never deletes or uploads character data.
 const CV_DEDUPE_CACHE_VERSION = 1;
@@ -2177,8 +2638,8 @@ function cvDedupeCloseZoom() {
     cvDedupeZoomReturnFocus = null;
 }
 
-function cvDedupeOpenZoom(button) {
-    const layer = document.querySelector('.cv-dedupe-layer');
+function cvDedupeOpenZoom(button, layerSelector = '.cv-dedupe-layer') {
+    const layer = document.querySelector(layerSelector);
     if (!layer || !button) return;
     cvDedupeCloseZoom();
     cvDedupeZoomReturnFocus = button;
@@ -2450,6 +2911,7 @@ function cvDedupeClose() {
 
 function cvDedupeOpen() {
     if (currentLibraryMode !== 'cards') return;
+    cvIllustrationClose();
     cvDedupeClose();
     const layer = document.createElement('div');
     layer.className = 'cv-dedupe-layer';
@@ -5994,7 +6456,8 @@ async function initialize() {
 
 function handleEscape(event) {
     if (event.key !== 'Escape') return;
-    if (document.querySelector('.cv-dedupe-zoom')) { cvDedupeCloseZoom(); return; }
+    if (document.querySelector('.cv-dedupe-zoom')) { cvIllustrationClosePreview(); return; }
+    if (document.querySelector('.cv-illustration-layer')) { cvIllustrationClose(); return; }
     if (document.querySelector('.cv-dedupe-layer')) { cvDedupeClose(); return; }
     if (document.querySelector('.cv-overlay')) closeOverlay();
 }
@@ -6004,7 +6467,7 @@ document.addEventListener('keydown', handleEscape);
 
 // Optional compatibility bridge: standalone CardVault can still be opened by an existing VVV shell if present.
 globalThis.VVVUnifiedCardVault = Object.assign(globalThis.VVVUnifiedCardVault || {}, {
-    version: '1.3.2-full',
+    version: '1.3.3-full',
     open: async () => { if (!initialized) await initialize(); return openLibrary(); },
     close: () => closeOverlay(),
     verify: (opts={quiet:true}) => verify(opts),
