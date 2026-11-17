@@ -1127,7 +1127,7 @@ function installInteractiveCardFallbacks() {
     }
 
     globalThis.cardVaultSeikanFallback = {
-        version: '1.2.9-full',
+        version: '1.3.0-full',
         rescan: () => rescanSeikanInteractiveRoots(document, { deepShadowScan: true }),
         send: role => sendSeikanRoleChoice(role),
         testOwner: () => sendSeikanRoleChoice('owner'),
@@ -1516,6 +1516,7 @@ function attachMobileViewport(overlay) {
 }
 
 function closeOverlay() {
+    cvDedupeClose();
     overlayAbortController?.abort();
     overlayAbortController = null;
     mobileViewportCleanup?.();
@@ -1714,6 +1715,7 @@ function createOverlay(mode = 'cards', options = {}) {
           <div class="cv-search-wrap"><i class="fa-solid fa-magnifying-glass"></i><input id="cv_library_search" class="text_pole" placeholder="搜索角色、作者或标签"></div>
           <button id="cv_ai_classify" class="menu_button cv-ai-classify-button" type="button" title="只分类新增 / 未分类角色卡；已分类卡不会重复调用"><i class="fa-solid fa-wand-magic-sparkles"></i><span>AI分类</span></button>
           <button id="cv_ai_retry_failed" class="menu_button cv-ai-retry-button" type="button" hidden title="只重新尝试上一次失败的角色卡"><i class="fa-solid fa-rotate-right"></i><span>重试失败</span></button>
+          <button id="cv_dedupe_open" class="menu_button cv-dedupe-open" type="button" title="比较角色卡内部内容，找出疑似重复和更新版本"><i class="fa-solid fa-clone"></i><span>内容查重</span></button>
           <button id="cv_library_manage" class="menu_button cv-manage-button" type="button" title="批量管理"><i class="fa-solid fa-list-check"></i><span>批量管理</span></button>
           <button id="cv_library_upload" class="menu_button" type="button"><i class="fa-solid fa-cloud-arrow-up"></i><span>上传</span></button>
           <button id="cv_library_refresh" class="menu_button" type="button" title="刷新"><i class="fa-solid fa-rotate"></i></button>
@@ -1745,6 +1747,7 @@ function createOverlay(mode = 'cards', options = {}) {
     overlay.querySelector('#cv_library_upload').addEventListener('click', () => document.querySelector('#cv_upload_input')?.click());
     overlay.querySelector('#cv_ai_classify').addEventListener('click', () => runAiClassification().catch(error => notify('error', error.message)));
     overlay.querySelector('#cv_ai_retry_failed').addEventListener('click', () => runAiClassification({ onlyFailed: true }).catch(error => notify('error', error.message)));
+    overlay.querySelector('#cv_dedupe_open').addEventListener('click', cvDedupeOpen);
     overlay.querySelector('#cv_library_manage').addEventListener('click', () => setSelectionMode(!selectionMode));
     overlay.querySelector('#cv_select_all').addEventListener('click', selectAllVisible);
     overlay.querySelector('#cv_invert_selection').addEventListener('click', invertVisibleSelection);
@@ -1777,10 +1780,12 @@ function paintLibraryMode() {
     const search = overlay.querySelector('#cv_library_search');
     const manage = overlay.querySelector('#cv_library_manage');
     const upload = overlay.querySelector('#cv_library_upload');
+    const dedupe = overlay.querySelector('#cv_dedupe_open');
     const aiClassify = overlay.querySelector('#cv_ai_classify');
     const aiRetry = overlay.querySelector('#cv_ai_retry_failed');
     if (search) search.placeholder = currentLibraryMode === 'play' ? '搜索游玩备份' : '搜索角色、作者或标签';
     if (manage) manage.hidden = false;
+    if (dedupe) dedupe.hidden = currentLibraryMode !== 'cards';
     if (upload) upload.hidden = currentLibraryMode !== 'cards';
     if (aiClassify) {
         aiClassify.hidden = currentLibraryMode !== 'cards';
@@ -2116,6 +2121,507 @@ async function openLibrary() {
     if (!await verify({ quiet: true })) throw new Error('请先在扩展设置中登录 CardVault');
     createOverlay('cards');
     await loadCards('');
+}
+
+// CardVault 1.3.0 — local content similarity / version duplicate finder.
+// Reads card details only. Never deletes or uploads character data.
+const CV_DEDUPE_CACHE_VERSION = 1;
+const CV_DEDUPE_SKETCH_SIZES = Object.freeze({ main: 96, description: 48, opening: 48, full: 96, worldbook: 32 });
+let cvDedupeEntries = null;
+let cvDedupeSnapshot = '';
+let cvDedupeScan = null;
+let cvDedupeFailures = [];
+let cvDedupeNetworkCount = 0;
+let cvDedupeCachedCount = 0;
+
+function cvDedupeNormalize(value, limit = 54000) {
+    const normalized = String(value ?? '').normalize('NFKC').toLowerCase()
+        .replace(/<script\b[^>]*>[\s\S]*?<\/script>/gi, match => match.replace(/<[^>]*>/g, ' '))
+        .replace(/<[^>]+>/g, ' ')
+        .replace(/[^\p{L}\p{N}]/gu, '');
+    return normalized.length > limit
+        ? normalized.slice(0, Math.floor(limit / 2)) + normalized.slice(-Math.ceil(limit / 2))
+        : normalized;
+}
+
+function cvDedupeName(value) {
+    return cvDedupeNormalize(String(value || '')
+        .replace(/[（(【\[]\s*(?:v(?:er(?:sion)?)?|版本|更新|修订)?\s*\d+(?:[._]\d+){0,3}\s*[）)】\]]$/i, '')
+        .replace(/(?:[\s._\-·]*(?:v(?:er(?:sion)?)?|版本|更新版|修订版)\s*\d+(?:[._]\d+){0,3}|[\s._\-·]*\d+\.\d+(?:\.\d+){0,2})$/i, '')
+        .replace(/[\s._\-·]*(?:更新版|修订版|重制版|最终版)$/i, ''), 240);
+}
+
+function cvDedupeHash(value, seed = 2166136261) {
+    let hash = seed >>> 0;
+    for (let i = 0; i < value.length; i++) hash = Math.imul(hash ^ value.charCodeAt(i), 16777619) >>> 0;
+    return hash.toString(36);
+}
+
+function cvDedupeSketch(value, count) {
+    const text = String(value || '');
+    if (text.length < 4) return [];
+    const heap = [];
+    const present = new Set();
+    const siftUp = index => {
+        while (index > 0) {
+            const parent = (index - 1) >>> 1;
+            if (heap[parent] >= heap[index]) break;
+            [heap[parent], heap[index]] = [heap[index], heap[parent]];
+            index = parent;
+        }
+    };
+    const siftDown = () => {
+        let index = 0;
+        for (;;) {
+            let next = index;
+            const left = index * 2 + 1;
+            const right = left + 1;
+            if (left < heap.length && heap[left] > heap[next]) next = left;
+            if (right < heap.length && heap[right] > heap[next]) next = right;
+            if (next === index) break;
+            [heap[next], heap[index]] = [heap[index], heap[next]];
+            index = next;
+        }
+    };
+    let rolling = 0;
+    for (let i = 0; i < 4; i++) rolling = (Math.imul(rolling, 257) + text.charCodeAt(i)) >>> 0;
+    const factor = 16974593; // 257^3, modulo 2^32
+    for (let i = 0; i <= text.length - 4; i++) {
+        if (i) {
+            rolling = (Math.imul((rolling - Math.imul(text.charCodeAt(i - 1), factor)) >>> 0, 257)
+                + text.charCodeAt(i + 3)) >>> 0;
+        }
+        let hash = rolling;
+        hash = Math.imul(hash ^ (hash >>> 16), 0x7feb352d) >>> 0;
+        hash = Math.imul(hash ^ (hash >>> 15), 0x846ca68b) >>> 0;
+        hash = (hash ^ (hash >>> 16)) >>> 0;
+        if (present.has(hash)) continue;
+        if (heap.length < count) {
+            heap.push(hash);
+            present.add(hash);
+            siftUp(heap.length - 1);
+        } else if (hash < heap[0]) {
+            present.delete(heap[0]);
+            heap[0] = hash;
+            present.add(hash);
+            siftDown();
+        }
+    }
+    return heap.sort((a, b) => a - b);
+}
+
+function cvDedupeSketchSimilarity(left, right) {
+    if (!left?.length || !right?.length) return 0;
+    let i = 0, j = 0, common = 0;
+    while (i < left.length && j < right.length) {
+        if (left[i] === right[j]) { common++; i++; j++; }
+        else if (left[i] < right[j]) i++;
+        else j++;
+    }
+    return common / Math.max(left.length, right.length);
+}
+
+function cvDedupeCardTexts(card) {
+    const data = valueFromCard(card);
+    const worldbook = card?.worldbook || data?.character_book || data?.extensions?.character_book;
+    const entries = worldbook?.entries
+        ? (Array.isArray(worldbook.entries) ? worldbook.entries : Object.values(worldbook.entries))
+        : [];
+    const worldText = entries.map(entry => [entry?.comment, entry?.name,
+        ...(Array.isArray(entry?.keys) ? entry.keys : Array.isArray(entry?.key) ? entry.key : []), entry?.content].join(' ')).sort().join('\n');
+    const regex = Array.isArray(card?.regex) ? card.regex : [];
+    const regexText = regex.map(item => [item?.scriptName, item?.name, item?.findRegex, item?.replaceString].join(' ')).sort().join('\n');
+    const description = cvDedupeNormalize([data.description, data.personality].join('\n'), 40000);
+    const opening = cvDedupeNormalize([data.first_mes, ...(Array.isArray(data.alternate_greetings) ? data.alternate_greetings : [])].join('\n'), 32000);
+    const scenario = cvDedupeNormalize([data.scenario, data.mes_example].join('\n'), 35000);
+    const world = cvDedupeNormalize(worldText, 45000);
+    const supporting = cvDedupeNormalize([data.system_prompt, data.post_history_instructions, data.creator_notes, regexText].join('\n'), 40000);
+    const main = cvDedupeNormalize([description, scenario, opening].join('\n'), 65000);
+    const full = cvDedupeNormalize([main, world, supporting].join('\n'), 85000);
+    return { description, opening, main, full, worldbook: world };
+}
+
+function cvDedupeMakeEntry(card, summary) {
+    const texts = cvDedupeCardTexts(card);
+    const lengths = Object.fromEntries(Object.entries(texts).map(([field, value]) => [field, value.length]));
+    return {
+        id: String(summary.id),
+        key: cvDedupeSummaryKey(summary),
+        nameKey: cvDedupeName(summary.name || card.name),
+        creatorKey: cvDedupeNormalize(summary.creator || card.creator || '', 150),
+        lengths,
+        exactHash: `${texts.full.length}:${cvDedupeHash(texts.full)}:${cvDedupeHash(texts.full, 0x9e3779b9)}`,
+        sketches: Object.fromEntries(Object.entries(CV_DEDUPE_SKETCH_SIZES)
+            .map(([field, count]) => [field, cvDedupeSketch(texts[field], count)])),
+    };
+}
+
+function cvDedupeSummaryKey(summary) {
+    return [summary?.id, summary?.updatedAt, summary?.currentVersion, summary?.size, summary?.originalName].map(value => String(value ?? '')).join('|');
+}
+
+function cvDedupeCacheKey() {
+    return `cardvault_content_dedupe_v${CV_DEDUPE_CACHE_VERSION}:${requiredCardVaultAccount()}`;
+}
+
+function cvDedupeReadCache() {
+    try {
+        const parsed = JSON.parse(localStorage.getItem(cvDedupeCacheKey()) || 'null');
+        if (parsed?.version !== CV_DEDUPE_CACHE_VERSION || !Array.isArray(parsed?.entries)) return new Map();
+        const map = new Map();
+        for (const item of parsed.entries) {
+            if (!item?.id || !item?.sketches || !item?.lengths) continue;
+            const sketches = Object.fromEntries(Object.entries(CV_DEDUPE_SKETCH_SIZES).map(([field]) => [field,
+                String(item.sketches[field] || '').split(',').filter(Boolean).map(value => parseInt(value, 36)).filter(Number.isFinite)]));
+            map.set(String(item.id), { ...item, sketches });
+        }
+        return map;
+    } catch { return new Map(); }
+}
+
+function cvDedupeWriteCache(entries, summaries) {
+    try {
+        const active = new Set(summaries.map(item => String(item.id)));
+        const items = [...entries.values()].filter(item => active.has(item.id)).map(item => ({
+            ...item,
+            sketches: Object.fromEntries(Object.entries(item.sketches)
+                .map(([field, values]) => [field, values.map(value => value.toString(36)).join(',')])),
+        }));
+        localStorage.setItem(cvDedupeCacheKey(), JSON.stringify({ version: CV_DEDUPE_CACHE_VERSION, entries: items }));
+    } catch (error) {
+        console.warn('[CardVault] 内容查重缓存写入失败，本次扫描仍有效', error);
+    }
+}
+
+function cvDedupeCompare(left, right, threshold) {
+    if (!left?.lengths || !right?.lengths || Math.min(left.lengths.full, right.lengths.full) < 160) return null;
+    const exact = left.exactHash === right.exactHash;
+    const scores = {};
+    for (const field of Object.keys(CV_DEDUPE_SKETCH_SIZES)) {
+        scores[field] = cvDedupeSketchSimilarity(left.sketches[field], right.sketches[field]);
+    }
+    const weights = { main: 0.43, description: 0.22, opening: 0.15, full: 0.20 };
+    let total = 0, divisor = 0;
+    for (const [field, weight] of Object.entries(weights)) {
+        if (!left.lengths[field] && !right.lengths[field]) continue;
+        total += scores[field] * weight;
+        divisor += weight;
+    }
+    const score = exact ? 1 : divisor ? total / divisor : 0;
+    const sameName = left.nameKey.length >= 2 && left.nameKey === right.nameKey;
+    const sameCreator = left.creatorKey.length >= 2 && left.creatorKey !== '未知作者' && left.creatorKey === right.creatorKey;
+    const likelyUpdate = sameName && score >= (sameCreator ? Math.max(0.47, threshold - 0.24) : Math.max(0.82, threshold));
+    // Renamed cards can match, but require stronger evidence to avoid merging
+    // unrelated characters that share a common frontend/template/setting.
+    const nearThreshold = sameName ? threshold : Math.max(threshold, sameCreator ? 0.83 : 0.88);
+    const near = score >= nearThreshold && (scores.main >= 0.50 || scores.description >= 0.67);
+    if (!exact && !likelyUpdate && !near) return null;
+    return { leftId: left.id, rightId: right.id, score, scores,
+        kind: exact ? 'exact' : likelyUpdate ? 'update' : 'similar', sameName, sameCreator };
+}
+
+function cvDedupeBuildGroups(pairs, summaries) {
+    const parents = new Map();
+    const root = id => {
+        if (!parents.has(id)) parents.set(id, id);
+        let cursor = id;
+        while (parents.get(cursor) !== cursor) cursor = parents.get(cursor);
+        while (parents.get(id) !== cursor) { const next = parents.get(id); parents.set(id, cursor); id = next; }
+        return cursor;
+    };
+    for (const pair of pairs) {
+        const a = root(pair.leftId), b = root(pair.rightId);
+        if (a !== b) parents.set(b, a);
+    }
+    const byId = new Map(summaries.map(item => [String(item.id), item]));
+    const groups = new Map();
+    for (const pair of pairs) {
+        const key = root(pair.leftId);
+        if (!groups.has(key)) groups.set(key, { ids: new Set(), pairs: [] });
+        const group = groups.get(key);
+        group.ids.add(pair.leftId);
+        group.ids.add(pair.rightId);
+        group.pairs.push(pair);
+    }
+    return [...groups.values()].map(group => {
+        const cards = [...group.ids].map(id => byId.get(id)).filter(Boolean)
+            .sort((a, b) => Date.parse(b.updatedAt || '') - Date.parse(a.updatedAt || '') || String(a.name || '').localeCompare(String(b.name || '')));
+        const links = group.pairs.sort((a, b) => b.score - a.score);
+        return { cards, links, best: links[0] };
+    }).sort((a, b) => b.best.score - a.best.score || b.cards.length - a.cards.length);
+}
+
+function cvDedupeThreshold() {
+    return Number(document.querySelector('#cv_dedupe_threshold')?.value || 0.78);
+}
+
+function cvDedupeSetProgress(message, progress = null) {
+    const layer = document.querySelector('.cv-dedupe-layer');
+    if (!layer) return;
+    const status = layer.querySelector('#cv_dedupe_status');
+    if (status) status.textContent = message;
+    const bar = layer.querySelector('#cv_dedupe_progress');
+    if (bar && progress !== null) bar.value = Math.max(0, Math.min(1, progress));
+}
+
+function cvDedupeClose() {
+    cvDedupeScan?.controller?.abort();
+    document.querySelector('.cv-dedupe-layer')?.remove();
+}
+
+function cvDedupeOpen() {
+    if (currentLibraryMode !== 'cards') return;
+    cvDedupeClose();
+    const layer = document.createElement('div');
+    layer.className = 'cv-dedupe-layer';
+    layer.innerHTML = `
+      <section class="cv-dedupe-dialog" role="dialog" aria-modal="true" aria-label="角色卡内容查重">
+        <header class="cv-dedupe-header">
+          <div class="cv-dedupe-icon"><i class="fa-solid fa-clone"></i></div>
+          <div class="cv-dedupe-heading"><b>角色卡内容查重</b><small>比较卡内描述、性格、场景、开场白、世界书等，识别疑似重复与更新版本</small></div>
+          <button id="cv_dedupe_close" class="menu_button cv-dedupe-x" type="button" aria-label="关闭查重"><i class="fa-solid fa-xmark"></i></button>
+        </header>
+        <div class="cv-dedupe-controls">
+          <label for="cv_dedupe_threshold">查重灵敏度</label>
+          <select id="cv_dedupe_threshold" class="text_pole" aria-label="查重灵敏度">
+            <option value="0.90">严格 · 90%</option>
+            <option value="0.78" selected>均衡 · 78%</option>
+            <option value="0.65">宽松 · 65%</option>
+          </select>
+          <button id="cv_dedupe_start" class="menu_button cv-primary" type="button"><i class="fa-solid fa-magnifying-glass"></i> 开始扫描</button>
+          <button id="cv_dedupe_force" class="menu_button" type="button" title="不使用本地查重缓存，重新读取全部卡片内部内容"><i class="fa-solid fa-arrows-rotate"></i> 重新读取</button>
+          <button id="cv_dedupe_cancel" class="menu_button" type="button" hidden>停止</button>
+        </div>
+        <div class="cv-dedupe-progress-box"><div id="cv_dedupe_status" role="status">仅比较卡片内容，不调用 AI，也不会自动删除任何角色卡。</div><progress id="cv_dedupe_progress" value="0" max="1"></progress></div>
+        <div id="cv_dedupe_results" class="cv-dedupe-results"><div class="cv-dedupe-empty"><i class="fa-solid fa-layer-group"></i><b>查找同一角色的不同版本</b><span>点击「开始扫描」，首次读取可能需要一些时间。之后未修改的卡片会使用本机指纹缓存。</span></div></div>
+        <footer class="cv-dedupe-footer"><i class="fa-solid fa-circle-info"></i> 相似度为本地文本特征估计；同名不等于重复，最近上传也不一定是最新版本。请自行核对后再处理。</footer>
+      </section>`;
+    document.querySelector('.cv-overlay')?.appendChild(layer);
+    layer.addEventListener('mousedown', event => { if (event.target === layer) cvDedupeClose(); });
+    layer.querySelector('#cv_dedupe_close').addEventListener('click', cvDedupeClose);
+    layer.querySelector('#cv_dedupe_cancel').addEventListener('click', () => cvDedupeScan?.controller?.abort());
+    layer.querySelector('#cv_dedupe_start').addEventListener('click', () => cvDedupeRun(false).catch(error => notify('error', `内容查重失败：${error.message}`)));
+    layer.querySelector('#cv_dedupe_force').addEventListener('click', () => cvDedupeRun(true).catch(error => notify('error', `内容查重失败：${error.message}`)));
+    layer.querySelector('#cv_dedupe_threshold').addEventListener('change', () => { if (cvDedupeEntries) void cvDedupeRenderResults(); });
+    layer.querySelector('#cv_dedupe_results').addEventListener('click', event => {
+        const compareButton = event.target.closest('[data-cv-dedupe-compare]');
+        if (compareButton) { void cvDedupeShowDiff(compareButton); return; }
+        const button = event.target.closest('[data-cv-dedupe-open]');
+        if (!button) return;
+        const id = button.dataset.cvDedupeOpen;
+        cvDedupeClose();
+        showDetail(id, captureLibraryPosition(id)).catch(error => notify('error', error.message));
+    });
+    const currentSnapshot = cardListFingerprint(loadedCards);
+    if (cvDedupeEntries && cvDedupeSnapshot === currentSnapshot) {
+        cvDedupeSetProgress(`已有本次会话的扫描结果 · ${cvDedupeEntries.size} 张卡片`, 1);
+        void cvDedupeRenderResults();
+    }
+}
+
+function cvDedupeRenderGroup(group, index) {
+    const kindLabel = { exact: '内容完全相同', update: '疑似更新版本', similar: '内容高度相似' }[group.best.kind];
+    const cards = group.cards.map(card => `
+        <div class="cv-dedupe-card-row">
+          <div class="cv-dedupe-card-info"><b title="${escapeHtml(card.name || '')}">${escapeHtml(card.name || '未命名角色')}</b>
+            <small>${escapeHtml(card.creator || '未知作者')} · 云端版本 ${escapeHtml(card.currentVersion || 1)} · 上传更新 ${escapeHtml(formatDate(card.updatedAt))}</small></div>
+          <button type="button" class="menu_button cv-dedupe-view" data-cv-dedupe-open="${escapeHtml(String(card.id))}">查看卡片 <i class="fa-solid fa-arrow-up-right-from-square"></i></button>
+        </div>`).join('');
+    const matches = group.links.slice(0, 6).map(pair => {
+        const a = group.cards.find(card => String(card.id) === pair.leftId);
+        const b = group.cards.find(card => String(card.id) === pair.rightId);
+        return `<div class="cv-dedupe-link"><span>${escapeHtml(a?.name || '角色卡 A')} ↔ ${escapeHtml(b?.name || '角色卡 B')}</span><b>${Math.round(pair.score * 100)}%</b></div>`;
+    }).join('');
+    const first = group.best;
+    const detail = [
+        ['主要正文', first.scores.main], ['角色描述与性格', first.scores.description],
+        ['开场白', first.scores.opening], ['世界书', first.scores.worldbook], ['整体内容', first.scores.full],
+    ].map(([label, value]) => `<span>${escapeHtml(label)} <b>${Math.round(value * 100)}%</b></span>`).join('');
+    return `<article class="cv-dedupe-group">
+      <div class="cv-dedupe-group-head"><span class="cv-dedupe-index">${index + 1}</span>
+        <div class="cv-dedupe-group-title"><b>${kindLabel}</b><small>${group.cards.length} 张关联角色卡 · ${group.links.length} 组匹配</small></div>
+        <span class="cv-dedupe-score">${Math.round(first.score * 100)}%</span></div>
+      <div class="cv-dedupe-card-list">${cards}</div>
+      <div class="cv-dedupe-compare-actions"><button class="menu_button" type="button" data-cv-dedupe-compare="1" data-left="${escapeHtml(first.leftId)}" data-right="${escapeHtml(first.rightId)}"><i class="fa-solid fa-code-compare"></i> 对比内容差异</button></div>
+      <div class="cv-dedupe-diff" hidden></div>
+      <details class="cv-dedupe-details"><summary>查看内容匹配依据</summary>
+        <div class="cv-dedupe-fields">${detail}</div>
+        <div class="cv-dedupe-links">${matches}${group.links.length > 6 ? `<small>另有 ${group.links.length - 6} 组匹配未展开</small>` : ''}</div>
+      </details>
+    </article>`;
+}
+
+function cvDedupeDiffFields(card) {
+    const data = valueFromCard(card);
+    const world = card?.worldbook || data?.character_book || data?.extensions?.character_book;
+    return [
+        ['角色描述', data.description], ['性格', data.personality], ['场景', data.scenario],
+        ['首条消息', data.first_mes],
+        ['备选开场', Array.isArray(data.alternate_greetings) ? data.alternate_greetings.join('\n\n---\n\n') : ''],
+        ['示例对话', data.mes_example], ['创作者备注', data.creator_notes],
+        ['系统提示', data.system_prompt], ['后历史指令', data.post_history_instructions],
+        ['内嵌世界书', worldbookTextForAi(world)], ['Scoped Regex', regexTextForAi(card?.regex)],
+    ];
+}
+
+function cvDedupeDiffExcerpt(value, limit = 2400) {
+    const text = String(value || '');
+    if (text.length <= limit) return text || '（空）';
+    return `${text.slice(0, limit)}\n……（仅显示前 ${limit} 字；完整内容请打开卡片详情）`;
+}
+
+async function cvDedupeShowDiff(button) {
+    const group = button.closest('.cv-dedupe-group');
+    const panel = group?.querySelector('.cv-dedupe-diff');
+    if (!panel) return;
+    if (panel.dataset.ready === '1') {
+        panel.hidden = !panel.hidden;
+        return;
+    }
+    button.disabled = true;
+    panel.hidden = false;
+    panel.textContent = '正在读取两张角色卡的原始内容……';
+    try {
+        const [left, right] = await Promise.all([button.dataset.left, button.dataset.right]
+            .map(id => apiFetch(`/api/cards/${encodeURIComponent(id)}`, { signal: overlayAbortController?.signal, timeoutMs: 45000 })));
+        if (!panel.isConnected) return;
+        const a = cvDedupeDiffFields(left), b = cvDedupeDiffFields(right);
+        const changed = a.map(([label, first], index) => ({ label, first: String(first || ''), second: String(b[index]?.[1] || '') }))
+            .filter(item => cvDedupeNormalize(item.first) !== cvDedupeNormalize(item.second));
+        panel.innerHTML = `<div class="cv-dedupe-diff-title">${changed.length ? `检测到 ${changed.length} 项内容存在差异` : '所选主要文本字段没有差异'} <small>左：${escapeHtml(left.name || '卡片 A')} · 右：${escapeHtml(right.name || '卡片 B')}</small></div>`
+            + (changed.length ? changed.map(item => `<section class="cv-dedupe-diff-section"><b>${escapeHtml(item.label)}</b>
+              <div class="cv-dedupe-diff-columns"><pre>${escapeHtml(cvDedupeDiffExcerpt(item.first))}</pre><pre>${escapeHtml(cvDedupeDiffExcerpt(item.second))}</pre></div></section>`).join('')
+                : '<p>若封面、附属资源或扩展元数据不同，本功能不会将其判定为主要文本差异。</p>');
+        panel.dataset.ready = '1';
+    } catch (error) {
+        if (panel.isConnected) panel.textContent = `读取对比内容失败：${error.message}`;
+    } finally {
+        if (button.isConnected) button.disabled = false;
+    }
+}
+
+async function cvDedupeRenderResults() {
+    const target = document.querySelector('#cv_dedupe_results');
+    if (!target || !cvDedupeEntries) return;
+    const threshold = cvDedupeThreshold();
+    const signatures = [...cvDedupeEntries.values()];
+    const pairs = [];
+    const count = signatures.length;
+    for (let i = 0; i < count; i++) {
+        if (i && i % 55 === 0) {
+            cvDedupeSetProgress(`正在比对内部内容 ${i}/${count} 张……`, 1);
+            await new Promise(resolve => setTimeout(resolve, 0));
+            if (!target.isConnected) return;
+        }
+        for (let j = i + 1; j < count; j++) {
+            const pair = cvDedupeCompare(signatures[i], signatures[j], threshold);
+            if (pair) pairs.push(pair);
+        }
+    }
+    const groups = cvDedupeBuildGroups(pairs, loadedCards);
+    const matchedCount = new Set(pairs.flatMap(pair => [pair.leftId, pair.rightId])).size;
+    const failure = cvDedupeFailures.length ? ` · ${cvDedupeFailures.length} 张读取失败（未纳入比较）` : '';
+    cvDedupeSetProgress(`已比对 ${count} 张 · 发现 ${groups.length} 组疑似重复（涉及 ${matchedCount} 张）${failure}`, 1);
+    if (!groups.length) {
+        target.innerHTML = `<div class="cv-dedupe-empty"><i class="fa-solid fa-circle-check"></i><b>未发现达到当前阈值的疑似重复</b><span>可切换「宽松」灵敏度再次比对；读取失败的卡片不在本次结果中。</span></div>`;
+        return;
+    }
+    // Render incrementally to keep large libraries responsive.
+    const fragment = document.createDocumentFragment();
+    const summary = document.createElement('div');
+    summary.className = 'cv-dedupe-summary';
+    summary.innerHTML = `<b>疑似重复 ${groups.length} 组</b><span>涉及 ${matchedCount} 张角色卡 · 按最高相似度排序</span>`;
+    fragment.append(summary);
+    const list = document.createElement('div');
+    list.className = 'cv-dedupe-group-list';
+    fragment.append(list);
+    target.replaceChildren(fragment);
+    let shown = 0;
+    const addMore = () => {
+        const end = Math.min(shown + 30, groups.length);
+        list.insertAdjacentHTML('beforeend', groups.slice(shown, end).map((group, index) => cvDedupeRenderGroup(group, shown + index)).join(''));
+        shown = end;
+        target.querySelector('#cv_dedupe_more')?.remove();
+        if (shown < groups.length) {
+            const more = document.createElement('button');
+            more.id = 'cv_dedupe_more';
+            more.type = 'button';
+            more.className = 'menu_button cv-dedupe-more';
+            more.textContent = `显示更多（还有 ${groups.length - shown} 组）`;
+            more.addEventListener('click', addMore);
+            target.append(more);
+        }
+    };
+    addMore();
+}
+
+async function cvDedupeRun(force = false) {
+    if (cvDedupeScan) return;
+    const layer = document.querySelector('.cv-dedupe-layer');
+    if (!layer) return;
+    const summaries = [...loadedCards];
+    if (summaries.length < 2) {
+        cvDedupeSetProgress('卡库角色卡少于 2 张，或角色卡尚未加载完成。');
+        return;
+    }
+    const controller = new AbortController();
+    const scan = { controller };
+    cvDedupeScan = scan;
+    cvDedupeEntries = null;
+    cvDedupeFailures = [];
+    cvDedupeNetworkCount = 0;
+    cvDedupeCachedCount = 0;
+    const start = layer.querySelector('#cv_dedupe_start');
+    const forceButton = layer.querySelector('#cv_dedupe_force');
+    const cancel = layer.querySelector('#cv_dedupe_cancel');
+    start.disabled = forceButton.disabled = true;
+    cancel.hidden = false;
+    layer.querySelector('#cv_dedupe_results').innerHTML = '<div class="cv-dedupe-empty"><i class="fa-solid fa-spinner fa-spin"></i><b>正在读取卡片内部信息</b><span>首次扫描会逐张读取，关闭窗口可以停止。扫描过程中不会修改云端角色卡。</span></div>';
+    const cache = force ? new Map() : cvDedupeReadCache();
+    const entries = new Map();
+    let cursor = 0, done = 0;
+    const update = () => cvDedupeSetProgress(`读取 ${done}/${summaries.length} · 缓存 ${cvDedupeCachedCount} · 网络 ${cvDedupeNetworkCount} · 失败 ${cvDedupeFailures.length}`, done / summaries.length);
+    update();
+    const worker = async () => {
+        while (!controller.signal.aborted) {
+            const index = cursor++;
+            if (index >= summaries.length) break;
+            const summary = summaries[index];
+            const id = String(summary.id);
+            try {
+                const existing = cache.get(id);
+                if (existing && existing.key === cvDedupeSummaryKey(summary)) {
+                    entries.set(id, existing);
+                    cvDedupeCachedCount++;
+                } else {
+                    const detail = await apiFetch(`/api/cards/${encodeURIComponent(id)}`, { signal: controller.signal, timeoutMs: 45000 });
+                    if (controller.signal.aborted) break;
+                    entries.set(id, cvDedupeMakeEntry(detail, summary));
+                    cvDedupeNetworkCount++;
+                }
+            } catch (error) {
+                if (controller.signal.aborted) break;
+                cvDedupeFailures.push({ id, name: summary.name || '', error: String(error?.message || error) });
+            }
+            done++;
+            if (done % 5 === 0 || done === summaries.length) update();
+        }
+    };
+    try {
+        await Promise.all(Array.from({ length: Math.min(4, summaries.length) }, worker));
+        cvDedupeWriteCache(entries, summaries);
+        if (controller.signal.aborted) {
+            cvDedupeSetProgress(`已停止扫描 · 本次已读取 ${done}/${summaries.length}，有效指纹已缓存`, done / summaries.length);
+            layer.querySelector('#cv_dedupe_results').innerHTML = '<div class="cv-dedupe-empty"><b>扫描已停止</b><span>再次点击「开始扫描」可复用已缓存的卡片指纹。</span></div>';
+            return;
+        }
+        cvDedupeEntries = entries;
+        cvDedupeSnapshot = cardListFingerprint(summaries);
+        await cvDedupeRenderResults();
+    } finally {
+        if (cvDedupeScan === scan) cvDedupeScan = null;
+        if (start.isConnected) { start.disabled = false; forceButton.disabled = false; cancel.hidden = true; }
+    }
 }
 
 function classificationStorageKey(cardId) {
@@ -5383,7 +5889,7 @@ async function initialize() {
             void refreshCardListFromServer().catch(error => console.warn('[CardVault] background card-list warmup skipped', error));
             void runImportGuardianSweep({ force: true });
         }
-        console.info(`[CardVault] Full 1.2.9 loaded: ST ${sillyTavernUserHandle} -> ${accountDisplayName(requiredCardVaultAccount())}; transport=${cardVaultTransportMode}`);
+        console.info(`[CardVault] Full 1.3.0 loaded: ST ${sillyTavernUserHandle} -> ${accountDisplayName(requiredCardVaultAccount())}; transport=${cardVaultTransportMode}`);
     } catch (error) {
         initialized = false;
         console.error('[CardVault] Initialization failed', error);
@@ -5392,7 +5898,9 @@ async function initialize() {
 }
 
 function handleEscape(event) {
-    if (event.key === 'Escape' && document.querySelector('.cv-overlay')) closeOverlay();
+    if (event.key !== 'Escape') return;
+    if (document.querySelector('.cv-dedupe-layer')) { cvDedupeClose(); return; }
+    if (document.querySelector('.cv-overlay')) closeOverlay();
 }
 
 document.addEventListener('keydown', handleEscape);
@@ -5400,7 +5908,7 @@ document.addEventListener('keydown', handleEscape);
 
 // Optional compatibility bridge: standalone CardVault can still be opened by an existing VVV shell if present.
 globalThis.VVVUnifiedCardVault = Object.assign(globalThis.VVVUnifiedCardVault || {}, {
-    version: '1.2.9-full',
+    version: '1.3.0-full',
     open: async () => { if (!initialized) await initialize(); return openLibrary(); },
     close: () => closeOverlay(),
     verify: (opts={quiet:true}) => verify(opts),
